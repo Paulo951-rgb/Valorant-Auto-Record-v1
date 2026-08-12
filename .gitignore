@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+
+# Python virtual envs
+venv/
+.venv/
+env/
+
+# Build / packaging output
+dist/
+build/
+out/
+release/
+
+# Electron
+*.log
+
+# App runtime data (generated at runtime; do not track)
+config/config_local.json
+python/config_local.json
+logs/*.log
+recordings/*.mp4
+recordings/*.mkv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

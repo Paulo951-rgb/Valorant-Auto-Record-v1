@@ -142,3 +142,32 @@ def stop_record():
 
 def is_recording():
     return recording
+
+
+def get_obs_status():
+    """Retourne un instantané léger de l'état d'OBS (non bloquant).
+
+    Contrairement à connect_obs(), cette fonction NE tente pas de reconnecter
+    si la connexion est perdue : elle se contente de vérifier le client mis en
+    cache. Les reconnexions lourdes sont laissées à connect_obs() (appelée par
+    start_record / test_obs_connection).
+    """
+    running = is_obs_running()
+    connected = False
+    scene = None
+    if _client is not None:
+        try:
+            _client.get_version()
+            connected = True
+            try:
+                scene = _client.get_current_program_scene().scene_name
+            except Exception:
+                scene = None
+        except Exception:
+            connected = False
+    return {
+        "running": running,
+        "connected": connected,
+        "recording": recording,
+        "scene": scene,
+    }

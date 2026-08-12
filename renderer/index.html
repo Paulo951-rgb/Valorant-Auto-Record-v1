@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self';" />
+  <title>Valorant Auto Record</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- ===================== SIDEBAR ===================== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">V</div>
+        <div class="brand-text">
+          <span class="brand-title">VALORANT</span>
+          <span class="brand-sub">AUTO RECORD</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="dashboard">
+          <span class="nav-ico">▦</span> Tableau de bord
+        </button>
+        <button class="nav-item" data-view="history">
+          <span class="nav-ico">≣</span> Historique
+        </button>
+        <button class="nav-item" data-view="logs">
+          <span class="nav-ico">❯_</span> Logs
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-ico">⚙</span> Paramètres
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="backend-pill" id="backendPill">
+          <span class="dot"></span>
+          <span id="backendState">Backend…</span>
+        </div>
+        <span class="version" id="appVersion">v—</span>
+      </div>
+    </aside>
+
+    <!-- ===================== MAIN ===================== -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="viewTitle">Tableau de bord</h1>
+          <span class="topbar-sub" id="viewSub">Surveillance en temps réel</span>
+        </div>
+        <div class="topbar-right">
+          <div class="global-status" id="globalStatus">
+            <span class="gs-dot"></span>
+            <span class="gs-text">Initialisation…</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- ============ DASHBOARD ============ -->
+      <section class="view active" id="view-dashboard">
+        <div class="hero-banner" id="heroBanner">
+          <div class="hero-left">
+            <span class="hero-label">SYSTÈME</span>
+            <span class="hero-state" id="heroState">EN ATTENTE</span>
+          </div>
+          <div class="hero-right">
+            <div class="hero-metric">
+              <span class="hm-label">DURÉE</span>
+              <span class="hm-value" id="heroDuration">00:00</span>
+            </div>
+            <div class="hero-metric">
+              <span class="hm-label">FICHIER</span>
+              <span class="hm-value" id="heroFile" title="">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="status-grid">
+          <!-- OBS -->
+          <div class="status-card" id="card-obs">
+            <div class="sc-head">
+              <span class="sc-tag">OBS</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="obsState">Indisponible</div>
+            <div class="sc-detail" id="obsDetail">Non détecté</div>
+            <div class="sc-detail" id="obsScene">Scène : —</div>
+          </div>
+          <!-- VALORANT -->
+          <div class="status-card" id="card-valorant">
+            <div class="sc-head">
+              <span class="sc-tag">VALORANT</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="valorantState">Indisponible</div>
+            <div class="sc-detail" id="valorantDetail">Processus non détecté</div>
+          </div>
+          <!-- RIOT -->
+          <div class="status-card" id="card-riot">
+            <div class="sc-head">
+              <span class="sc-tag">RIOT</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="riotState">Indisponible</div>
+            <div class="sc-detail" id="riotDetail">Client non détecté</div>
+          </div>
+          <!-- PARTIE -->
+          <div class="status-card" id="card-match">
+            <div class="sc-head">
+              <span class="sc-tag">PARTIE</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="matchState">Indisponible</div>
+            <div class="sc-detail" id="matchDetail">Carte : — | Agent : —</div>
+            <div class="sc-detail" id="matchScore">Score : —</div>
+          </div>
+          <!-- REC -->
+          <div class="status-card" id="card-rec">
+            <div class="sc-head">
+              <span class="sc-tag">REC</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="recState">Arrêté</div>
+            <div class="sc-detail" id="recDetail">Durée : 00:00</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn btn-primary" id="btnToggleMonitor">Démarrer la surveillance</button>
+          <button class="btn btn-ghost" id="btnAutoRecord">Auto : ON</button>
+          <div class="control-divider"></div>
+          <button class="btn btn-record" id="btnStartRecord">▶ Démarrer</button>
+          <button class="btn btn-stop" id="btnStopRecord">■ Arrêter</button>
+          <div class="control-divider"></div>
+          <button class="btn btn-ghost" id="btnReconnectObs">Reconnecter OBS</button>
+          <button class="btn btn-ghost" id="btnLaunchObs">Lancer OBS</button>
+          <button class="btn btn-warn" id="btnRestartBackend">Relancer le backend</button>
+        </div>
+
+        <div class="last-error" id="lastErrorBox" hidden>
+          <span class="le-tag">ERREUR</span>
+          <span class="le-text" id="lastErrorText"></span>
+        </div>
+      </section>
+
+      <!-- ============ HISTORY ============ -->
+      <section class="view" id="view-history">
+        <div class="toolbar">
+          <button class="btn btn-ghost" id="btnRefreshHistory">↻ Actualiser</button>
+          <button class="btn btn-ghost" id="btnOpenRecordings">Ouvrir le dossier</button>
+        </div>
+        <div class="history-list" id="historyList">
+          <div class="empty-state">Aucun match enregistré pour le moment.</div>
+        </div>
+      </section>
+
+      <!-- ============ LOGS ============ -->
+      <section class="view" id="view-logs">
+        <div class="toolbar">
+          <div class="log-filters" id="logFilters">
+            <button class="chip active" data-level="ALL">Tous</button>
+            <button class="chip" data-level="INFO">INFO</button>
+            <button class="chip" data-level="SUCCESS">SUCCESS</button>
+            <button class="chip" data-level="WARNING">WARN</button>
+            <button class="chip" data-level="ERROR">ERROR</button>
+            <button class="chip" data-level="DEBUG">DEBUG</button>
+          </div>
+          <button class="btn btn-ghost" id="btnClearLogs">Vider</button>
+        </div>
+        <div class="log-view" id="logView"></div>
+      </section>
+
+      <!-- ============ SETTINGS ============ -->
+      <section class="view" id="view-settings">
+        <form id="settingsForm" class="settings-form" autocomplete="off">
+          <div class="settings-group">
+            <h2 class="group-title">Enregistrement</h2>
+
+            <div class="field">
+              <label for="setObsFolder">Dossier de sauvegarde des vidéos</label>
+              <div class="field-row">
+                <input type="text" id="setObsFolder" />
+                <button type="button" class="btn btn-ghost btn-sm" data-pick="folder">Parcourir</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="setObsExe">Exécutable OBS (obs64.exe)</label>
+              <div class="field-row">
+                <input type="text" id="setObsExe" />
+                <button type="button" class="btn btn-ghost btn-sm" data-pick="exe">Parcourir</button>
+              </div>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="setRecordFormat">Format d'enregistrement</label>
+                <select id="setRecordFormat">
+                  <option value="mp4">mp4</option>
+                  <option value="mkv">mkv</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="setMaxSize">Nettoyage auto (Go, 0 = illimité)</label>
+                <input type="number" id="setMaxSize" min="0" max="2000" step="1" />
+              </div>
+              <div class="field">
+                <label for="setMaxDuration">Durée max (min, 0 = illimité)</label>
+                <input type="number" id="setMaxDuration" min="0" max="6000" step="1" />
+              </div>
+              <div class="field">
+                <label for="setFileNaming">Nommage des fichiers</label>
+                <input type="text" id="setFileNaming" />
+              </div>
+            </div>
+
+            <div class="field field-toggle">
+              <label for="setAutoRecord">Enregistrement automatique</label>
+              <label class="switch">
+                <input type="checkbox" id="setAutoRecord" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h2 class="group-title">OBS WebSocket</h2>
+            <div class="field-grid">
+              <div class="field">
+                <label for="setObsHost">Adresse</label>
+                <input type="text" id="setObsHost" />
+              </div>
+              <div class="field">
+                <label for="setObsPort">Port</label>
+                <input type="number" id="setObsPort" />
+              </div>
+              <div class="field field-span2">
+                <label for="setObsPassword">Mot de passe</label>
+                <input type="password" id="setObsPassword" />
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h2 class="group-title">Avancé</h2>
+            <div class="field-grid">
+              <div class="field">
+                <label for="setPoll">Intervalle de sondage (s)</label>
+                <input type="number" id="setPoll" min="1" max="60" step="1" />
+              </div>
+              <div class="field">
+                <label for="setLogLevel">Niveau des logs</label>
+                <select id="setLogLevel">
+                  <option value="DEBUG">DEBUG</option>
+                  <option value="INFO">INFO</option>
+                  <option value="WARNING">WARNING</option>
+                  <option value="ERROR">ERROR</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-actions">
+            <button type="button" class="btn btn-ghost" id="btnResetSettings">Réinitialiser</button>
+            <button type="submit" class="btn btn-primary">Enregistrer les paramètres</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

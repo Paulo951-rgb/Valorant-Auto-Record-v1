@@ -1,0 +1,60 @@
+{
+  "name": "valorant-auto-record",
+  "version": "1.0.0",
+  "description": "Enregistrement automatique de vos parties Valorant via OBS. Interface Electron autour du moteur Python existant.",
+  "author": "Paulo951-rgb",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "lint": "node -c electron/main.js && node -c electron/preload.js && node -c electron/backend_bridge.js && node -c renderer/renderer.js",
+    "build:win": "electron-builder --win --x64",
+    "build": "npm run build:win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.paulo951rgb.valorantautorecord",
+    "productName": "Valorant Auto Record",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "python/**/*.py",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "python",
+        "to": "python"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "requirements.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "Valorant-Auto-Record-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Valorant Auto Record"
+    }
+  }
+}

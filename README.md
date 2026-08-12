@@ -1,86 +1,196 @@
-Valorant Auto Record v1
-Résumé
+# Valorant Auto Record
 
-Valorant Auto Record v1 est un outil Python qui automatise l'enregistrement vidéo (ou capture) lors de sessions de jeu Valorant. Il surveille l'exécution du jeu et démarre/arrête l'enregistrement selon des règles définies (par ex. lancement/fermeture de Valorant, ou événements en jeu).
-Objectif : permettre d'enregistrer automatiquement des parties sans intervention manuelle.
-Table des matières
+Enregistrement **automatique** de vos parties Valorant via OBS Studio, dans une véritable application de bureau **Electron** avec interface graphique moderne.
 
-Contexte
-Fonctionnalités
-Prérequis
-Installation
-Configuration
-Utilisation
-Structure du projet (haut niveau)
-Fichiers importants
-Dépannage
-Sécurité & respect de la vie privée
-Licence
-Contribuer
-Questions fréquentes (FAQ)
-Contexte
+Le moteur Python d'origine (détection Valorant / Riot, connexion OBS, démarrage/arrêt de l'enregistrement, renommage des fichiers, historique) a été **conservé intégralement**. Electron vient s'ajouter autour de ce moteur pour fournir un tableau de bord, des contrôles, des paramètres et des logs en temps réel.
 
-Ce projet vise à simplifier la capture des parties en lançant automatiquement un enregistreur quand Valorant s'exécute. Utile pour les créateurs, streamers, et joueurs souhaitant conserver automatiquement leurs parties.
-Fonctionnalités (attendues)
+---
 
-Détection automatique du processus Valorant.
-Démarrage et arrêt automatiques d'une session d'enregistrement.
-Sauvegarde des vidéos dans un dossier de sortie organisé par date/heure.
-Option de config (dossier de sortie, format, durée max, nommage).
-Fichiers journaux (logs) pour diagnostiquer le comportement.
-Mode test / simulation (exécuter sans réellement enregistrer).
-Option pour regrouper/compresser les sorties (bundle).
-Prérequis
+## Sommaire
 
-Système d'exploitation : Windows (majoritairement attendu pour Valorant), mais le code Python peut fonctionner sur Linux si adapté.
-Python 3.8+ recommandé.
-Droits suffisants pour capturer l'écran / accéder au périphérique d'enregistrement.
-Logiciels d'enregistrement (si le projet s'appuie sur un enregistreur externe comme OBS) : OBS + obs-websocket, ou dépendances Python (p. ex. pyautogui, ffmpeg).
-ffmpeg si l'enregistrement/encodage est géré localement.
-Installation (rapide)
+- [Présentation](#présentation)
+- [Fonctionnalités](#fonctionnalités)
+- [Architecture](#architecture)
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Installation & configuration d'OBS](#installation--configuration-dobs)
+- [Lancement en développement](#lancement-en-développement)
+- [Création de l'exécutable Windows (.exe)](#création-de-lexécutable-windows-exe)
+- [Configuration](#configuration)
+- [Fonctionnement](#fonctionnement)
+- [Dépannage](#dépannage)
+- [Sécurité](#sécurité)
+- [Licence](#licence)
 
-Cloner le dépôt :
+---
+
+## Présentation
+
+Valorant Auto Record surveille le lancement de Valorant et de Riot, détecte le début et la fin d'une partie, puis démarre/arrête automatiquement l'enregistrement OBS. À la fin du match, la vidéo est renommée avec la carte, l'agent, le score et le résultat, puis est ajoutée à l'historique.
+
+Le logiciel reste actif en arrière-plan et se reconnecte automatiquement à OBS / Riot si besoin.
+
+## Fonctionnalités
+
+- Détection automatique d'OBS, de Valorant et du client Riot.
+- Connexion à OBS via OBS WebSocket (logique existante conservée).
+- Récupération de l'état de session Valorant via l'API locale Riot (lockfile).
+- Démarrage/arrêt **automatique** de l'enregistrement au début/fin de partie.
+- Démarrage/arrêt **manuel** depuis l'interface.
+- Renommage des fichiers : `Valorant_<date>_<carte>_<agent>_<score>_<résultat>.mp4`.
+- Historique des matchs (base SQLite).
+- Nettoyage automatique des anciens enregistrements (seuil configurable en Go).
+- Interface Electron : **Tableau de bord**, **Historique**, **Logs**, **Paramètres**.
+- Statut en temps réel (OBS, Valorant, Riot, partie, enregistrement, durée).
+- Logs horodatés avec niveaux INFO / SUCCESS / WARNING / ERROR / DEBUG, sauvegardés dans `logs/app.log`.
+- Reconnexion automatique d'OBS, relance automatique du backend en cas de crash.
+- Paramètres persistés après redémarrage (`python/config_local.json`).
+
+## Architecture
+
+```
+Valorant Auto Record.exe (Electron)
+│
+├── Renderer (interface HTML/CSS/JS)
+│   ├── Tableau de bord (statuts temps réel + contrôles)
+│   ├── Historique (matchs enregistrés)
+│   ├── Logs (journal horodaté)
+│   └── Paramètres (configuration persistée)
+│
+├── Main Process Node.js (electron/)
+│   ├── main.js          → fenêtre + IPC + cycle de vie
+│   ├── preload.js       → pont sécurisé (contextBridge)
+│   └── backend_bridge.js → spawn du backend Python + protocole JSON-lines
+│
+└── Backend Python (python/) — moteur EXISTANT conservé
+    ├── backend.py        → point d'entrée JSON-lines (stdin/stdout)
+    ├── monitor.py        → boucle de surveillance extraite de main.py
+    ├── obs_controller.py → connexion OBS WebSocket + record (inchangé)
+    ├── valorant_api.py   → lockfile Riot + état session (inchangé)
+    ├── database.py       → historique SQLite (inchangé)
+    ├── file_manager.py   → renommage + nettoyage (inchangé)
+    ├── logger.py         → logs (inchangé)
+    ├── config.py         → constantes (inchangé)
+    └── main.py           → ancienne interface customtkinter (alternative autonome)
+```
+
+**Communication Electron ↔ Python :** protocole **JSON-lines** sur `stdin`/`stdout`. Le backend reste un processus unique longue durée (pas de relancement toutes les quelques secondes). Electron envoie des requêtes `{"id","method","params"}` et reçoit des réponses + des notifications temps réel (`status`, `log`, `ready`, `match_started`, `match_ended`, ...).
+
+## Prérequis
+
+- **Windows 10/11** (Valorant est exclusivement Windows).
+- **OBS Studio** avec le plugin **OBS WebSocket** activé (inclus dans OBS ≥ 28).
+- **Python 3.8+** installé et accessible dans le PATH (mode développement / build avec `.py`).
+  - Optionnel mais recommandé pour un `.exe` autonome : **PyInstaller** (voir [Build Windows](#création-de-lexécutable-windows-exe)).
+- **Node.js 18+** et **npm** (pour développer/recompiler l'interface).
+- Valorant et le Riot Client installés.
+
+## Installation
+
+```bash
 git clone https://github.com/Paulo951-rgb/Valorant-Auto-Record-v1.git
 cd Valorant-Auto-Record-v1
-Créer un environnement virtuel :
-python -m venv venv
-Windows : venv\Scripts\activate
-macOS/Linux : source venv/bin/activate
-Installer les dépendances :
+
+# Dépendances Node (Electron + electron-builder)
+npm install
+
+# Dépendances Python du moteur
 pip install -r requirements.txt
-Si le dépôt n'a pas de requirements.txt, installer les dépendances nécessaires (ex. psutil, watchdog, requests, pywin32, ffmpeg-python) selon la doc fournie.
-Installer ffmpeg (si nécessaire) et s'assurer que ffmpeg est dans le PATH.
-Configuration
+```
 
-Le projet devrait proposer un fichier de configuration (ex. config.json, config.yaml ou variables d'environnement). Par défaut, voici les paramètres courants :
-output_dir : dossier de sortie des vidéos (ex. ./recordings)
-record_format : mp4 / mkv
-max_file_size / max_duration : pour découper les enregistrements
-monitor_process_name : nom du processus Valorant (ex. "VALORANT.exe")
-use_obs : true/false — si utilise OBS via websocket
-obs_address / obs_password : configuration OBS
-log_level : DEBUG / INFO / WARNING / ERROR
-Si le dépôt n'inclut pas de fichier config, créer un fichier config.json exemple : { "output_dir": "recordings", "record_format": "mp4", "monitor_process_name": "VALORANT.exe", "use_obs": false, "max_duration_minutes": 60, "log_level": "INFO" }
-Utilisation
+> `requirements.txt` contient : `obsws-python`, `requests`, `colorama`, `psutil`.
 
-Mode simple (exemples) :
-python main.py
-python main.py --config config.json
-python main.py --dry-run (simule le comportement sans enregistrer)
-Exécuter en arrière-plan (Windows) : créer un service, une tâche planifiée, ou lancer dans un terminal et laisser tourner.
-Voir les logs (fichier logs/app.log ou sortie console) pour savoir quand l'enregistrement commence/arrête.
-Structure du projet (haut niveau)
+## Installation & configuration d'OBS
 
-main.py — point d'entrée (surveille le jeu et orchestre l'enregistrement)
-recorder/ — code d'enregistrement (wrapper ffmpeg ou contrôleur OBS)
-watcher/ — surveille les processus et détecte Valorant
-config/ — exemples de configuration
-logs/ — journaux d'exécution
-recordings/ — sortie par défaut pour les vidéos
-README.md — ce fichier Remarque : noms et arborescence peuvent varier : adapte en fonction du contenu réel.
-Fichiers importants
+1. Installez **OBS Studio** (version 28+ : OBS WebSocket est intégré).
+2. Dans OBS : **Outils → Paramètres du serveur WebSocket**.
+3. Activez le serveur. Notez :
+   - le **port** (par défaut **4455**),
+   - le **mot de passe** (généré, ou personnalisez-le).
+4. Dans l'application : **Paramètres → OBS WebSocket** → renseignez l'adresse (`localhost`), le port et le mot de passe.
 
-README.md — documentation
-requirements.txt — dépendances Python
-config.example.json — exemple de configuration
-main.py — script principal
+## Lancement en développement
+
+```bash
+npm start        # lance l'application Electron
+npm run dev      # idem + DevTools ouverts
+```
+
+Au démarrage, l'application :
+1. ouvre la fenêtre,
+2. lance automatiquement le backend Python (`python/backend.py`),
+3. récupère l'état initial et l'affiche.
+
+## Création de l'exécutable Windows (.exe)
+
+```bash
+npm run build:win
+```
+
+Le résultat est dans `dist/` : un installeur NSIS (`Valorant-Auto-Record-Setup-1.0.0.exe`).
+
+Le dossier `python/` est inclus comme `extraResources`, donc le `.exe` peut lancer `backend.py` avec l'interpréteur Python système. Pour un `.exe` 100 % autonome (sans Python installé sur le PC cible), compilez le backend avec **PyInstaller** :
+
+```bash
+cd python
+pip install pyinstaller
+pyinstaller --onefile --name backend backend.py
+# placez dist/backend.exe dans python/ avant `npm run build:win`
+```
+
+L'application détecte automatiquement `backend.exe` s'il est présent et l'utilise à la place de `python backend.py`.
+
+## Configuration
+
+Tous les paramètres sont éditables dans **Paramètres** et persistés dans `python/config_local.json` :
+
+| Paramètre | Description | Défaut |
+|---|---|---|
+| `obs_folder` | Dossier de sauvegarde des vidéos | `~/Videos` |
+| `obs_exe_path` | Chemin de `obs64.exe` | `C:\Program Files\obs-studio\bin\64bit\obs64.exe` |
+| `obs_host` | Adresse OBS WebSocket | `localhost` |
+| `obs_port` | Port OBS WebSocket | `4455` |
+| `obs_password` | Mot de passe OBS WebSocket | `valorant123` |
+| `poll_interval` | Intervalle de sondage Riot (s) | `2` |
+| `auto_record` | Enregistrement automatique | `true` |
+| `log_level` | Niveau de logs | `INFO` |
+| `max_size_gb` | Nettoyage auto (Go, 0 = illimité) | `50` |
+| `max_duration_minutes` | Durée max indicative (min) | `60` |
+| `record_format` | Format attendu (mp4/mkv) | `mp4` |
+| `file_naming` | Modèle de nommage | `Valorant_{date}_{map}_{agent}_{score}_{result}` |
+
+## Fonctionnement
+
+```
+OBS ouvert → Connexion OBS → VALORANT détecté → Récupération Riot
+        → Surveillance de l'état → Partie détectée → Démarrage OBS
+        → Partie terminée → Arrêt OBS → Renommage → Historique → Nettoyage
+```
+
+La logique de surveillance (`python/monitor.py`) reproduit **exactement** la boucle d'origine (`main.py`) : passage à l'état `INGAME` → lancement OBS + `start_record` ; sortie de `INGAME` → `stop_record` + renommage + base de données + nettoyage.
+
+L'interface se met à jour automatiquement via les événements envoyés par le backend (pas besoin de redémarrer). Un rafraîchissement périodique de sécurité (`get_status` toutes les 4 s) est ajouté.
+
+## Dépannage
+
+| Symptôme | Cause / Solution |
+|---|---|
+| « OBS n'est pas lancé » | Démarrez OBS, ou cliquez sur **Lancer OBS** (vérifiez `obs_exe_path`). |
+| « Impossible de se connecter à OBS » | Vérifiez le port/mot de passe dans **Paramètres → OBS WebSocket**. Le logiciel retente automatiquement. |
+| « Riot Client non détecté (Valorant éteint) » | Valorant/Riot n'est pas lancé. Lancez le jeu. |
+| « Backend déconnecté » | Le backend Python a crashé. Le bouton **Relancer le backend** le redémarre. Vérifiez que Python et `requirements.txt` sont installés. |
+| Aucune information de partie | Vérifiez que Valorant tourne et que le Riot Client est connecté. L'API locale nécessite le lockfile Riot. |
+| Les vidéos ne sont pas renommées | Vérifiez `obs_folder` : il doit correspondre au **dossier de sortie OBS**. |
+| Logs vides | Baissez `log_level` sur `DEBUG`. Les logs sont aussi dans `logs/app.log`. |
+
+## Sécurité
+
+- Le mot de passe OBS est stocké en clair dans `config_local.json` (fichier local, non transmis ailleurs). Ne partagez pas ce fichier.
+- Aucun port réseau n'est exposé : la communication Electron ↔ Python se fait via `stdin`/`stdout` uniquement.
+- L'API Riot utilisée est strictement locale (`127.0.0.1`) via le lockfile du client.
+
+## Licence
+
+MIT — voir le dépôt d'origine.
+
+> Ce projet est fourni à titre éducatif. Valorant et Riot Games sont des marques de Riot Games. Ce projet n'est pas affilié à Riot Games.
