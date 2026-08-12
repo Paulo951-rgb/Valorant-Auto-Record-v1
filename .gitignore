@@ -21,6 +21,7 @@ release/
 # App runtime data (generated at runtime; do not track)
 config/config_local.json
 python/config_local.json
+python/valorant_recorder.db
 logs/*.log
 recordings/*.mp4
 recordings/*.mkv

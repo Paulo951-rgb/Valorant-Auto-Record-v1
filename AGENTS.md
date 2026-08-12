@@ -22,11 +22,15 @@ avec le backend via un protocole JSON-lines sur stdin/stdout (backend_bridge.js 
 ## Tests réalisés (sandbox Linux, sans OBS/Valorant)
 - Protocole backend : ping/get_config/save_config/get_status/get_history/monitoring/valo_state
   testés via stdin/stdout. Tous OK. Méthode inconnue gérée proprement.
+- Robustesse entrée stdin : requêtes JSON non-dict ([1,2], 42, "str", true, null) ne font plus
+  planter le backend (rejet propre via notification error). Le backend continue de répondre.
 - Persistance config : save_config → get_config après redémarrage backend OK.
-- Logique monitor.py : tests unitaires (début/fin de partie, victoire/défaite, auto_record off)
-  TOUS PASSÉS — la logique préservée d'origine se déclenche correctement.
+- Logique monitor.py : tests unitaires (début/fin de partie, victoire/défaite, auto_record off,
+  cache processus snapshot) TOUS PASSÉS — la logique préservée d'origine se déclenche correctement.
 - App Electron sous xvfb : UI se charge (4 onglets, 5 cartes, 14 boutons), backend Python lancé,
   événements ready/status/log reçus par le renderer, AUCUNE erreur JS.
+- Redémarrage multiple : 2 restarts concurrents (guard _restarting) → pas de double-spawn,
+  1 seul processus vivant à la fin. Auto-restart après SIGKILL (guard _exited) OK.
 
 ## Points d'attention
 - La communication se fait UNIQUEMENT via stdin/stdout (aucun port exposé).
@@ -34,3 +38,5 @@ avec le backend via un protocole JSON-lines sur stdin/stdout (backend_bridge.js 
 - Pour un .exe autonome : PyInstaller sur backend.py → backend.exe (détecté automatiquement).
 - Sur Linux/dev, le sandbox Chromium nécessite --no-sandbox (problème SUID, pas de code).
 - backend.py fait `os.chdir(_HERE)` pour que DB et config_local.json soient à côté des scripts.
+- Le callback externe du Monitor est `self._emit_event` (ne pas nommer un attribut et une méthode
+  du même nom : la méthode serait masquée par l'attribut d'instance — bug subtil corrigé).

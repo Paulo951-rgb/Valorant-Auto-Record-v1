@@ -1,4 +1,9 @@
+# Dépendances du moteur (backend Electron + modules métier)
 obsws-python>=1.7.0
 requests>=2.31.0
 colorama>=0.4.6
 psutil>=5.9.0
+
+# Dépendance de l'interface autonome (python/main.py, customtkinter).
+# Non requise par le backend Electron ; installez-la pour lancer main.py seul.
+customtkinter>=5.2.0

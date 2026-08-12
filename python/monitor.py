@@ -58,7 +58,7 @@ class Monitor:
         emit_event         : callable(event_name:str, data:dict) -> None
         """
         self._get_cfg = get_runtime_config
-        self._emit = emit_event
+        self._emit_event = emit_event  # callback externe (backend._emit_event)
 
         self._running = False
         self._auto_record = True
@@ -74,10 +74,19 @@ class Monitor:
         self._last_status_json = None
         self._last_error = None
 
+        # Cache court des détections processus (évite de parcourir psutil à
+        # chaque snapshot ; rafraîchi par la boucle de surveillance).
+        self._obs_running_cache = None
+        self._valorant_running_cache = None
+
     # ------------------------------------------------------------------ contrôle
     @property
     def running(self):
         return self._running
+
+    @property
+    def auto_record(self):
+        return self._auto_record
 
     def start(self):
         if self._running:
@@ -150,6 +159,11 @@ class Monitor:
         cfg = self._get_cfg()
         self._auto_record = bool(cfg.get("auto_record", True))
 
+        # Rafraîchit les détections processus une fois par tick (servira au
+        # snapshot sans reparcourir psutil à chaque demande de statut).
+        self._obs_running_cache = is_obs_running()
+        self._valorant_running_cache = is_valorant_running()
+
         # 1) Récupération de l'état Riot/Valorant (logique d'origine).
         try:
             state_data = get_current_state(debug=config.DEBUG)
@@ -186,7 +200,7 @@ class Monitor:
                 if test_obs_connection():
                     if start_record():
                         self._record_start_ts = time.time()
-                        self._emit("match_started", {
+                        self._emit_event("match_started", {
                             "map": self._current_map,
                             "agent": self._current_agent,
                         })
@@ -217,7 +231,7 @@ class Monitor:
                                    score_final, result_str, new_path)
                 max_size_gb = float(cfg.get("max_size_gb", 50))
                 file_manager.clean_old_recordings(obs_folder, max_size_gb=max_size_gb)
-                self._emit("match_ended", {
+                self._emit_event("match_ended", {
                     "map": self._current_map,
                     "agent": self._current_agent,
                     "score": score_final,
@@ -238,11 +252,15 @@ class Monitor:
         """Instantané complet de l'état (utilisé par le backend)."""
         cfg = self._get_cfg()
         obs = get_obs_status()
+        # Utilise le cache processus si la surveillance tourne ; sinon on
+        # interroge directement (snapshot demandé hors surveillance).
+        obs_running = self._obs_running_cache if self._obs_running_cache is not None else is_obs_running()
+        val_running = self._valorant_running_cache if self._valorant_running_cache is not None else is_valorant_running()
         return {
             "monitoring": self._running,
             "auto_record": self._auto_record,
             "obs": obs,
-            "valorant_running": is_valorant_running(),
+            "valorant_running": val_running,
             "riot_connected": riot_connected_value(),
             "session_state": self._previous_state if self._previous_state is not None else "Indisponible",
             "map": self._current_map,
@@ -254,22 +272,16 @@ class Monitor:
             "last_error": self._last_error,
         }
 
-    def _build_status(self):
-        return self.snapshot()
-
     def _emit_status(self, force=False):
-        status = self._build_status()
+        status = self.snapshot()
         js = json.dumps(status, sort_keys=True)
         if not force and js == self._last_status_json:
             return
         self._last_status_json = js
-        self._emit("status", status)
-
-    def _emit(self, name, data):
         try:
-            self._emit(name, data)
+            self._emit_event("status", status)
         except Exception as e:
-            logger.error("Erreur emission événement", e)
+            logger.error("Erreur emission événement status", e)
 
 
 def riot_connected_value():

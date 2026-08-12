@@ -459,8 +459,9 @@ function escapeAttr(s) { return escapeHtml(s); }
     if (v && v.ok) $('#appVersion').textContent = 'v' + v.data;
   } catch (e) { /* ignore */ }
 
-  // Rafraîchit périodiquement le statut (filet de sécurité en plus des events).
-  setInterval(() => { if (state.backendAlive) backendApi.call('get_status'); }, 4000);
+  // Rafraîchit périodiquement le statut (filet de sécurité en plus des events
+  // temps réel envoyés par le backend). Intervalle large pour épargner le CPU.
+  setInterval(() => { if (state.backendAlive) backendApi.call('get_status'); }, 10000);
 
   // Initialise l'état des boutons.
   $('#btnStartRecord').disabled = true;

@@ -24,13 +24,14 @@ def is_obs_running():
     try:
         import psutil
         for proc in psutil.process_iter(['name']):
-            if proc.info['name'] == 'obs64.exe':
+            name = (proc.info.get('name') or '').lower()
+            if name == 'obs64.exe':
                 return True
     except ImportError:
         # Solution de secours si psutil n'est pas installé
         try:
             output = subprocess.check_output('tasklist', shell=True).decode(errors='ignore')
-            return "obs64.exe" in output
+            return "obs64.exe" in output.lower()
         except Exception:
             return False
     return False

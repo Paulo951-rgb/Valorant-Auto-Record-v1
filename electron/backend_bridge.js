@@ -70,6 +70,7 @@ class BackendBridge {
     this.maxRestartAttempts = 5;
     this.autoRestart = true;
     this._restarting = false;
+    this._exited = false;
   }
 
   on(event, cb) {
@@ -112,6 +113,7 @@ class BackendBridge {
       return;
     }
 
+    this._exited = false;
     this.isRunning = true;
     this.rl = readline.createInterface({ input: this.process.stdout });
 
@@ -143,12 +145,17 @@ class BackendBridge {
   }
 
   _handleExit() {
+    // 'error' puis 'exit' peuvent se déclencher consécutivement pour le même
+    // processus ; on garde un drapeau pour ne nettoyer/quitter qu'une fois.
+    if (this._exited) return;
+    this._exited = true;
+
     const wasRunning = this.isRunning;
     this.isRunning = false;
     this.isReady = false;
     this.process = null;
     if (this.rl) {
-      this.rl.close();
+      try { this.rl.close(); } catch (e) { /* ignore */ }
       this.rl = null;
     }
     // Rejette les requêtes en attente.
@@ -167,7 +174,10 @@ class BackendBridge {
         message: `Backend arrêté. Reconnexion dans ${delay / 1000}s (tentative ${this.restartAttempts}/${this.maxRestartAttempts}).`,
         raw: '',
       });
-      setTimeout(() => this.start(), delay);
+      setTimeout(() => {
+        this._exited = false;  // autorise un futur cleanup
+        this.start();
+      }, delay);
     } else if (wasRunning && this.restartAttempts >= this.maxRestartAttempts) {
       this._emit('error', { message: 'Backend injoignable après plusieurs tentatives.' });
     }
@@ -273,18 +283,20 @@ class BackendBridge {
     // Désactive l'auto-restart le temps du redémarrage pour éviter un double spawn.
     this.autoRestart = false;
     if (this.process) {
+      this._exited = false;  // autorise _handleExit à nettoyer le processus quitté
       try { this.process.kill(); } catch (e) { /* ignore */ }
       // attend que le processus se termine effectivement
       await new Promise((r) => setTimeout(r, 500));
     }
     this._handleExitCleanup();
+    this._exited = false;
     this.autoRestart = true;
     this._restarting = false;
     this.start();
   }
 
   _handleExitCleanup() {
-    if (this.rl) { try { this.rl.close(); } catch (e) {} this.rl = null; }
+    if (this.rl) { try { this.rl.close(); } catch (e) { /* ignore */ } this.rl = null; }
     this.process = null;
     this.isRunning = false;
     this.isReady = false;
@@ -292,10 +304,12 @@ class BackendBridge {
 
   dispose() {
     this.autoRestart = false;
+    this._restarting = false;
     if (this.process) {
       try { this.process.kill(); } catch (e) { /* ignore */ }
     }
     this._handleExitCleanup();
+    this._exited = true;
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(new Error('Backend disposé.'));

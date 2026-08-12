@@ -15,6 +15,7 @@ Il se contente de l'orchestrer et de l'exposer à l'interface Electron.
 import os
 import sys
 import json
+import re
 import time
 import threading
 import traceback
@@ -171,10 +172,15 @@ def _on_log(formatted_msg):
     """ui_callback branché sur logger.py : transmet les logs à Electron."""
     # formatted_msg = "[HH:MM:SS] [LEVEL] message"
     _log_to_file(formatted_msg)
+    # Parsing robuste : le format est fixe "[time] [LEVEL] message".
     try:
-        _, rest = formatted_msg.split("] ", 1)
-        level = rest.split("] ", 1)[0].strip("[")
-        message = rest.split("] ", 1)[1] if "] " in rest else rest
+        m = re.match(r"^\[(?P<time>[^\]]+)\]\s*\[(?P<level>[^\]]+)\]\s*(?P<msg>.*)$",
+                     formatted_msg, re.DOTALL)
+        if m:
+            level = m.group("level").strip()
+            message = m.group("msg")
+        else:
+            level, message = "INFO", formatted_msg
     except Exception:
         level, message = "INFO", formatted_msg
     if not _level_allowed(level):
@@ -256,8 +262,9 @@ def cmd_stop_monitoring(params):
 
 
 def cmd_set_auto_record(params):
-    monitor.set_auto_record(bool(params.get("enabled", True)) if params else True)
-    return {"auto_record": monitor._auto_record}
+    enabled = params.get("enabled", True) if isinstance(params, dict) else True
+    monitor.set_auto_record(bool(enabled))
+    return {"auto_record": monitor.auto_record}
 
 
 def cmd_start_record(params):
@@ -342,9 +349,18 @@ def _handle_request(line):
     except Exception as e:
         _send_notification("error", {"message": f"JSON invalide : {e}"})
         return
+    # Une requête doit être un objet JSON. Tout autre type (liste, nombre,
+    # chaîne, booléen) est rejeté proprement sans faire planter le backend.
+    if not isinstance(req, dict):
+        _send_notification("error", {"message": "Requête invalide : un objet JSON était attendu."})
+        return
     req_id = req.get("id")
     method = req.get("method")
-    params = req.get("params") or {}
+    params = req.get("params")
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        params = {}
     handler = HANDLERS.get(method)
     if handler is None:
         _send_response(req_id, None, error=f"Méthode inconnue : {method}")
