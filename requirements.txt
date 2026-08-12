@@ -1,0 +1,7 @@
+obsws-python>=1.7.0
+requests>=2.31.0
+colorama>=0.4.6
+obsws-python>=1.7.0
+requests>=2.31.0
+colorama>=0.4.6
+customtkinter>=5.2.0
