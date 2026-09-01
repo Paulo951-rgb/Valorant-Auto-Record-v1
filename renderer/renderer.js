@@ -476,14 +476,14 @@ $('#settingsForm').addEventListener('submit', async (e) => {
     const sel = $('#setObsExe');
     if (sel) cfg.obs_exe_path = sel.value;
     cfg.show_advanced = state.showAdvanced;
-    const res = await api.call('save_config', cfg);
-    if (res && res.ok) {
-      toast('Paramètres enregistrés.', 'ok');
-      state.config = res.data;
-      if (cfg.auto_record !== undefined) api.call('set_auto_record', { enabled: cfg.auto_record });
-      if (cfg.start_with_windows !== undefined) {
-        api.call('app:setAutoLaunch', { enabled: !!cfg.start_with_windows });
-      }
+      const res = await api.call('save_config', cfg);
+      if (res && res.ok) {
+        toast('Paramètres enregistrés.', 'ok');
+        state.config = res.data;
+        if (cfg.auto_record !== undefined) api.call('set_auto_record', { enabled: cfg.auto_record });
+        if (cfg.start_with_windows !== undefined) {
+          api.setAutoLaunch(!!cfg.start_with_windows);
+        }
     } else {
       toast('Échec : ' + (res ? res.error : 'erreur'), 'err');
     }
@@ -650,7 +650,7 @@ api.on('backend:config_changed', (data) => {
     }
   }
   if (data.start_with_windows !== undefined) {
-    api.call('app:setAutoLaunch', { enabled: !!data.start_with_windows }).catch(() => {});
+    api.setAutoLaunch(!!data.start_with_windows);
   }
 });
 api.on('backend:match_started', (data) => {
