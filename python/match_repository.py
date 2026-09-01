@@ -46,7 +46,7 @@ DB_NAME = "valorant_recorder.db"
 # Liste ordonnée des colonnes cibles. Utilisée pour SELECT et INSERT.
 COLUMNS: List[str] = [
     "id", "match_id", "date", "map_name", "agent", "score",
-    "ally_score", "enemy_score", "result", "mode", "duration_seconds",
+    "ally_score", "enemy_score", "result", "mode", "queue_id", "duration_seconds",
     "kills", "deaths", "assists", "kd", "rr_change", "rank",
     "video_path", "file_size_bytes", "status", "created_at",
 ]
@@ -102,6 +102,7 @@ class MatchRepository:
                 ("ally_score", "INTEGER"),
                 ("enemy_score", "INTEGER"),
                 ("mode", "TEXT"),
+                ("queue_id", "TEXT"),
                 ("duration_seconds", "INTEGER"),
                 ("kills", "INTEGER"),
                 ("deaths", "INTEGER"),
@@ -131,19 +132,25 @@ class MatchRepository:
 
     # ----------------- CRUD -----------------
     def upsert_match(self, data: Dict[str, Any]) -> int:
-        """Insère ou met à jour un match par match_id. Retourne l'id."""
+        """Insère ou met à jour un match par match_id. Retourne l'id.
+        Note : si plusieurs anciens enregistrements ont match_id=NULL,
+        MySQL/SQLite les traite comme distincts, mais notre UNIQUE INDEX
+        sur match_id ne s'applique qu'aux valeurs non-NULL.
+        """
         with self._lock:
             self._ensure()
             data = dict(data)
             match_id = data.get("match_id")
+            generated = False
             if not match_id:
                 match_id = f"{config.LOCAL_MATCH_PREFIX}{uuid.uuid4().hex[:12]}"
                 data["match_id"] = match_id
+                generated = True
             with self._conn() as c:
                 cur = c.cursor()
                 cur.execute("SELECT id FROM matches WHERE match_id=?", (match_id,))
                 row = cur.fetchone()
-                fields = [c for c in COLUMNS if c not in ("id",)]
+                fields = [col for col in COLUMNS if col not in ("id",)]
                 if row is None:
                     placeholders = ",".join(["?"] * len(fields))
                     cols = ",".join(fields)

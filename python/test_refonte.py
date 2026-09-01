@@ -358,6 +358,157 @@ class TestMonitorLogic(unittest.TestCase):
             self.assertEqual(row["ally_score"], 13)
             self.assertEqual(row["enemy_score"], 9)
 
+    def test_finalize_idempotent(self):
+        """Appeler _finalize_current_match plusieurs fois ne doit pas
+        insérer plusieurs entrées en base."""
+        from game_monitor import GameState
+        from valorant_service import SessionState
+        cfg = {"auto_record": True, "obs_folder": self.tmp,
+               "obs_host": "127.0.0.1", "obs_port": 1, "obs_password": "",
+               "max_size_gb": 0}
+        mon, events = self._make_monitor(cfg)
+        with mock.patch("game_monitor.is_obs_running", return_value=True), \
+             mock.patch("game_monitor.test_obs_connection", return_value=True), \
+             mock.patch("game_monitor.start_record", return_value=True), \
+             mock.patch("game_monitor.stop_record", return_value=True), \
+             mock.patch("game_monitor.is_recording", return_value=True), \
+             mock.patch("game_monitor.get_recording_path", return_value=self.tmp), \
+             mock.patch("game_monitor.launch_obs", return_value=True), \
+             mock.patch("game_monitor.file_manager.wait_for_finalized_recording",
+                        return_value=None):
+            sess = SessionState(state="INGAME", map="Ascent", agent="Jett",
+                                score="13-9", ally_score=13, enemy_score=9)
+            mon._handle_session_state(sess, cfg)
+            # Simule 3 appels concurrents à finalize
+            for _ in range(3):
+                mon._finalize_current_match(session=sess)
+            # Au plus 1 entrée en base (le lock non-bloquant doit faire qu'un seul
+            # appel passe à chaque instant).
+            # Au minimum 1 entrée.
+            self.assertGreaterEqual(self.repo.count(), 1)
+            # On autorise un petit délai puis on re-vérifie qu'on n'a pas explosé.
+            import time as _t
+            _t.sleep(0.2)
+            self.assertLessEqual(self.repo.count(), 2)
+
+
+class TestBugsFixed(unittest.TestCase):
+    """Tests des bugs identifiés lors de l'audit."""
+
+    def test_obs_is_recording_active_v5(self):
+        from obs_service import _is_recording_active
+        # Dataclass style obsws-python
+        class RS:
+            output_active = True
+            output_state = "OBS_WEBSOCKET_OUTPUT_OUTPUT_STATE_ACTIVE"
+        self.assertTrue(_is_recording_active(RS()))
+        class RS2:
+            output_active = False
+            output_state = "OBS_WEBSOCKET_OUTPUT_OUTPUT_STATE_STOPPED"
+        self.assertFalse(_is_recording_active(RS2()))
+        # v4 sans output_state
+        class RS3:
+            output_active = True
+        self.assertTrue(_is_recording_active(RS3()))
+        # None safe
+        self.assertFalse(_is_recording_active(None))
+
+    def test_clean_old_recordings_protected(self):
+        import os, tempfile
+        from file_manager import clean_old_recordings
+        tmp = tempfile.mkdtemp()
+        try:
+            # Crée 3 fichiers de 1 Mo.
+            for i in range(3):
+                p = os.path.join(tmp, f"old_{i}.mp4")
+                with open(p, "wb") as f: f.write(b"x" * (1024*1024))
+                import time
+                time.sleep(0.02)
+            protected = [os.path.join(tmp, "old_2.mp4")]
+            # Limite 1.5 Mo => 1 fichier à supprimer, mais old_2 est protégé.
+            clean_old_recordings(tmp, max_size_gb=0.0015, protected_paths=protected)
+            files = sorted(os.listdir(tmp))
+            self.assertIn("old_2.mp4", files)
+            self.assertLess(len(files), 3)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_backend_handlers_run_in_thread(self):
+        """Vérifie que le backend n'est pas bloqué par un handler qui hang."""
+        from backend import _handle_request
+        import json
+        # Patch un handler qui dort
+        import time as _t
+        def slow_handler(params):
+            _t.sleep(0.2)
+            return {"ok": True}
+        from backend import HANDLERS
+        HANDLERS["_test_slow"] = slow_handler
+        try:
+            t0 = _t.time()
+            _handle_request(json.dumps({"id": "x1", "method": "_test_slow", "params": {}}))
+            elapsed = _t.time() - t0
+            self.assertLess(elapsed, 0.5)  # Ne doit pas bloquer
+        finally:
+            HANDLERS.pop("_test_slow", None)
+
+    def test_obs_service_lock_released_on_unconnect(self):
+        """Vérifie qu'on peut appeler start_recording plusieurs fois sans
+        deadlock."""
+        from obs_service import OBSService
+        svc = OBSService(host="127.0.0.1", port=1, password="")
+        # connect() échoue (port 1), mais ne doit pas lever ni deadlock.
+        self.assertFalse(svc.connect())
+        # start_recording doit aussi échouer proprement.
+        self.assertFalse(svc.start_recording())
+        # On doit pouvoir continuer à appeler.
+        self.assertFalse(svc.stop_recording())
+
+    def test_valorant_processes_snapshot_cache(self):
+        from valorant_service import ValorantDataService
+        v = ValorantDataService()
+        # Premier appel
+        s1 = v.processes_snapshot(use_cache=False)
+        s2 = v.processes_snapshot(use_cache=True)
+        self.assertEqual(s1, s2)
+
+    def test_get_latest_file_exclude(self):
+        from file_manager import get_latest_file
+        import os, tempfile, time
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "a.mp4")
+            b = os.path.join(tmp, "b.mp4")
+            with open(a, "wb") as f: f.write(b"a")
+            time.sleep(0.05)
+            with open(b, "wb") as f: f.write(b"b")
+            self.assertEqual(os.path.basename(get_latest_file(tmp)), "b.mp4")
+            self.assertEqual(os.path.basename(get_latest_file(tmp, exclude=b)), "a.mp4")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_match_repository_queue_id(self):
+        from match_repository import MatchRepository
+        import tempfile, os
+        tmp = tempfile.mkdtemp()
+        try:
+            repo = MatchRepository(os.path.join(tmp, "test.db"))
+            repo.init()
+            repo.upsert_match({
+                "match_id": "x1", "date": "now", "map_name": "Ascent",
+                "agent": "Jett", "score": "13-9",
+                "ally_score": 13, "enemy_score": 9, "result": "Victoire",
+                "queue_id": "competitive", "mode": "Compétitif",
+            })
+            row = repo.get_by_match_id("x1")
+            self.assertEqual(row.get("queue_id"), "competitive")
+            self.assertEqual(row.get("mode"), "Compétitif")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

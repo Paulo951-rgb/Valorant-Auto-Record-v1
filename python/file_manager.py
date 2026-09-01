@@ -27,25 +27,51 @@ import logger
 _OBS_EXTENSIONS = (".mp4", ".mkv", ".mov", ".flv", ".ts", ".m3u8")
 
 
-def get_latest_file(directory, extensions=_OBS_EXTENSIONS, since_ts: float = 0.0):
+def get_latest_file(directory, extensions=_OBS_EXTENSIONS, since_ts: float = 0.0,
+                   exclude: Optional[str] = None):
     """Retourne le fichier d'enregistrement le plus récent du dossier,
-    créé après `since_ts` (epoch)."""
-    if not directory or not os.path.isdir(directory):
+    créé après `since_ts` (epoch). Si `exclude` est fourni, ce fichier
+    est ignoré (utile pour ne pas renommer deux fois le même fichier)."""
+    if not directory:
+        return None
+    try:
+        if not os.path.isdir(directory):
+            return None
+    except OSError:
         return None
     candidates = []
     for ext in extensions:
-        candidates.extend(glob.glob(os.path.join(directory, f"*{ext}")))
+        try:
+            candidates.extend(glob.glob(os.path.join(directory, f"*{ext}")))
+        except (OSError, ValueError):
+            continue
+    if exclude:
+        try:
+            ex_abs = os.path.abspath(exclude)
+        except (OSError, ValueError):
+            ex_abs = exclude
+        candidates = [c for c in candidates if os.path.abspath(c) != ex_abs]
     if since_ts > 0:
-        candidates = [c for c in candidates if os.path.getctime(c) >= since_ts - 5]
+        candidates = [c for c in candidates if _safe_getctime(c) >= since_ts - 5]
     if not candidates:
         return None
-    return max(candidates, key=os.path.getctime)
+    try:
+        return max(candidates, key=_safe_getctime)
+    except (OSError, ValueError):
+        return None
+
+
+def _safe_getctime(path: str) -> float:
+    try:
+        return os.path.getctime(path)
+    except OSError:
+        return 0.0
 
 
 def _file_size(path: str) -> int:
     try:
         return os.path.getsize(path)
-    except Exception:
+    except OSError:
         return -1
 
 
@@ -156,13 +182,34 @@ def rename_recording_with_options(obs_folder, map_name, agent, score, result,
         return target, _file_size(target)
 
 
-def clean_old_recordings(directory, max_size_gb):
-    if max_size_gb <= 0:
+def clean_old_recordings(directory, max_size_gb, protected_paths: Optional[list] = None):
+    """Supprime les fichiers les plus anciens si la taille du dossier dépasse
+    max_size_gb. Les fichiers dont le chemin est dans `protected_paths`
+    ne sont jamais supprimés (utile pour le fichier en cours)."""
+    if not directory or max_size_gb <= 0:
+        return
+    if not os.path.isdir(directory):
         return
     max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
-    files = glob.glob(os.path.join(directory, "*.mp4")) + \
-            glob.glob(os.path.join(directory, "*.mkv")) + \
-            glob.glob(os.path.join(directory, "*.mov"))
+    files = []
+    for ext in ("*.mp4", "*.mkv", "*.mov"):
+        try:
+            files.extend(glob.glob(os.path.join(directory, ext)))
+        except (OSError, ValueError):
+            continue
+    if not files:
+        return
+    # Exclut les fichiers protégés (ex: enregistrement en cours).
+    if protected_paths:
+        prot_abs = set()
+        for p in protected_paths:
+            if not p:
+                continue
+            try:
+                prot_abs.add(os.path.abspath(p))
+            except (OSError, ValueError):
+                continue
+        files = [f for f in files if os.path.abspath(f) not in prot_abs]
     if not files:
         return
     files.sort(key=os.path.getmtime)

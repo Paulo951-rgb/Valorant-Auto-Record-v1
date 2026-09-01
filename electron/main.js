@@ -11,28 +11,43 @@ let mainWindow = null;
 let backend = null;
 let tray = null;
 let isQuitting = false;
+let appReady = false;
 
 const isDev = process.argv.includes('--dev');
 
-// Si packaging Windows : single-instance lock pour éviter plusieurs fenêtres.
+// Single-instance lock : évite plusieurs fenêtres concurrentes.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
-  process.exit(0);
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 }
-app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
-  }
-});
 
 function getAssetPath(name) {
   return path.join(__dirname, '..', 'assets', name);
 }
 
+function readConfigSync() {
+  try {
+    const p = path.join(__dirname, '..', 'python', 'config_local.json');
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 720,
@@ -58,13 +73,17 @@ function createWindow() {
   });
 
   // Fermeture = minimize vers la zone de notification si configuré.
-  mainWindow.on('close', async (e) => {
+  // Important : le preventDefault doit être synchrone pour être pris en compte.
+  mainWindow.on('close', (e) => {
     if (isQuitting) return;
-    const cfg = readConfigSync();
+    let cfg = null;
+    try {
+      const p = path.join(__dirname, '..', 'python', 'config_local.json');
+      if (fs.existsSync(p)) cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch (err) { cfg = null; }
     if (cfg && cfg.minimize_to_tray) {
       e.preventDefault();
       mainWindow.hide();
-      return false;
     }
   });
 
@@ -76,23 +95,10 @@ function createWindow() {
   });
 }
 
-function readConfigSync() {
-  try {
-    const p = path.join(__dirname, '..', 'python', 'config_local.json');
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch (e) { /* ignore */ }
-  return null;
-}
-
 function buildTray() {
   if (tray) return;
-  let img = null;
   const iconPath = getAssetPath('tray.png');
-  if (fs.existsSync(iconPath)) {
-    img = nativeImage.createFromPath(iconPath);
-  } else {
-    img = nativeImage.createEmpty();
-  }
+  const img = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   try {
     tray = new Tray(img);
   } catch (e) {
@@ -100,11 +106,19 @@ function buildTray() {
     return;
   }
   tray.setToolTip('Valorant Auto Record');
-  const menu = Menu.buildFromTemplate([
-    { label: 'Ouvrir la fenêtre', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } else { createWindow(); } } },
+  const rebuildMenu = () => Menu.buildFromTemplate([
+    { label: 'Ouvrir la fenêtre', click: () => createWindow() },
+    { type: 'separator' },
+    {
+      label: 'Surveillance',
+      type: 'checkbox',
+      checked: !!(backend && backend.isRunning),
+      enabled: !!backend,
+    },
+    { type: 'separator' },
     { label: 'Quitter', click: () => { isQuitting = true; app.quit(); } },
   ]);
-  tray.setContextMenu(menu);
+  tray.setContextMenu(rebuildMenu());
   tray.on('click', () => {
     if (mainWindow) {
       if (mainWindow.isVisible()) mainWindow.hide();
@@ -131,16 +145,17 @@ function startBackend() {
 
 function sendToRenderer(channel, data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, data);
+    try { mainWindow.webContents.send(channel, data); } catch (e) { /* ignore */ }
   }
 }
 
 function handle(method, fn) {
   ipcMain.handle(method, async (_evt, ...args) => {
     try {
-      return { ok: true, data: await fn(...args) };
+      const data = await fn(...args);
+      return { ok: true, data };
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: e && e.message ? e.message : String(e) };
     }
   });
 }
@@ -166,8 +181,11 @@ function registerIpc() {
     return result.filePaths[0];
   });
   handle('shell:openPath', async (p) => {
-    if (p && fs.existsSync(p)) { shell.openPath(p); return true; }
-    return false;
+    if (p && typeof p === 'string' && fs.existsSync(p)) {
+      const err = await shell.openPath(p);
+      return { ok: !err, error: err || null };
+    }
+    return { ok: false, error: 'Chemin introuvable' };
   });
   handle('backend:restart', async () => {
     if (backend) { await backend.restart(); return true; }
@@ -176,7 +194,13 @@ function registerIpc() {
   handle('app:getVersion', async () => app.getVersion());
   handle('app:setAutoLaunch', async ({ enabled }) => {
     if (process.platform === 'win32' || process.platform === 'darwin') {
-      try { app.setLoginItemSettings({ openAtLogin: !!enabled, openAsHidden: true }); } catch (e) { /* ignore */ }
+      try {
+        app.setLoginItemSettings({
+          openAtLogin: !!enabled,
+          openAsHidden: true,
+          args: process.platform === 'win32' ? ['--minimized'] : [],
+        });
+      } catch (e) { /* ignore */ }
     }
     return { enabled: !!enabled };
   });
@@ -186,21 +210,41 @@ function registerIpc() {
     }
     return false;
   });
+  handle('app:showWindow', async () => { createWindow(); return true; });
+  handle('app:hideWindow', async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+    return true;
+  });
+  handle('app:quit', async () => { isQuitting = true; app.quit(); return true; });
 }
 
-app.whenReady().then(() => {
-  registerIpc();
-  createWindow();
-  buildTray();
-  startBackend();
-
-  // Sync auto-launch (best effort, non bloquant)
+function setupAutoLaunch() {
   try {
     const cfg = readConfigSync();
     if (cfg && cfg.start_with_windows) {
-      app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: true,
+        args: process.platform === 'win32' ? ['--minimized'] : [],
+      });
     }
   } catch (e) { /* ignore */ }
+}
+
+function killBackend() {
+  if (backend) {
+    try { backend.dispose(); } catch (e) { /* ignore */ }
+    backend = null;
+  }
+}
+
+app.whenReady().then(() => {
+  appReady = true;
+  registerIpc();
+  setupAutoLaunch();
+  createWindow();
+  buildTray();
+  startBackend();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -216,5 +260,19 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  if (backend) { backend.dispose(); backend = null; }
+  killBackend();
 });
+
+// Protection : si le process est tué brutalement, on tente de tuer le backend.
+process.on('SIGINT', () => { isQuitting = true; killBackend(); process.exit(0); });
+process.on('SIGTERM', () => { isQuitting = true; killBackend(); process.exit(0); });
+
+// Empêche le rendu silencieux d'erreurs non capturées.
+process.on('uncaughtException', (err) => {
+  try { console.error('Uncaught:', err); } catch (e) { /* ignore */ }
+});
+process.on('unhandledRejection', (err) => {
+  try { console.error('Unhandled rejection:', err); } catch (e) { /* ignore */ }
+});
+
+module.exports = { isReady: () => appReady };

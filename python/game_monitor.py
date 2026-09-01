@@ -13,15 +13,9 @@ GameMonitor — boucle de surveillance avec machine à états robuste.
   COMPLETED         : terminé, prêt pour le prochain match
 
 Mécanismes clés :
-  * Déclenchement de l'enregistrement UNIQUEMENT quand la session passe
-    en INGAME / GAMEMODE depuis un état non-recordable.
-  * Anti-rebond : on n'autorise pas deux enregistrements consécutifs
-    trop rapprochés (cooldown 30s).
-  * Reconnexion automatique d'OBS en cas d'erreur de connexion.
-  * Finalisation robuste : on attend que le fichier OBS soit stable
-    avant de renommer / écrire en base.
-  * Émission d'événements `match_started`, `match_ended`, `status` à
-    destination de l'UI.
+  * Anti-rebond : 30s entre 2 enregistrements.
+  * Finalisation protégée par un verrou (idempotente).
+  * Reconnexion automatique d'OBS en cas d'erreur.
 """
 from __future__ import annotations
 
@@ -31,7 +25,7 @@ import time
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 import config
 import logger
@@ -66,39 +60,33 @@ class GameState(str, Enum):
 
 
 class GameMonitor:
-    def __init__(self, get_runtime_config, emit_event, obs_service=None,
-                 valo_service=None, repository: Optional[match_repository.MatchRepository] = None):
+    def __init__(self, get_runtime_config: Callable[[], dict],
+                 emit_event: Callable[[str, dict], None],
+                 obs_service=None,
+                 valo_service: Optional[ValorantDataService] = None,
+                 repository: Optional[match_repository.MatchRepository] = None):
         self._get_cfg = get_runtime_config
         self._emit_event = emit_event
         self._valo = valo_service or ValorantDataService()
         self._repo = repository or match_repository.MatchRepository()
+
         self._running = False
         self._auto_record = True
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
-        self._state = GameState.IDLE
+        # State machine protégée.
         self._state_lock = threading.RLock()
-        self._previous_state = None
+        self._state = GameState.IDLE
+        self._previous_state: Optional[str] = None
         self._current_session = None
+        self._finalize_lock = threading.Lock()
+        self._finalize_in_progress = False
 
-        # données de match en cours
-        self._match = {
-            "started_at": None,
-            "ended_at": None,
-            "duration_s": 0,
-            "match_id": None,
-            "map": "Inconnu",
-            "agent": "Inconnu",
-            "score": "0-0",
-            "ally_score": 0,
-            "enemy_score": 0,
-            "result": "Inconnu",
-            "mode": None,
-            "video_path": None,
-            "file_size_bytes": 0,
-        }
-        self._record_start_ts = None
-        self._last_status_json = None
+        # Match en cours.
+        self._match = self._new_match_template()
+        self._record_start_ts: Optional[float] = None
+        self._last_status_json: Optional[str] = None
         self._last_error: Optional[str] = None
         self._match_cooldown_until = 0.0
         self._last_completed_match_id: Optional[str] = None
@@ -114,23 +102,35 @@ class GameMonitor:
 
     @property
     def state(self) -> str:
-        return self._state.value
+        with self._state_lock:
+            return self._state.value
+
+    @property
+    def current_match_id(self) -> Optional[str]:
+        with self._state_lock:
+            return self._match.get("match_id")
 
     # ---------- control ----------
     def start(self):
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="GameMonitor")
         self._thread.start()
         logger.info("Surveillance démarrée.")
         self._emit_status(force=True)
 
-    def stop(self):
+    def stop(self, join_timeout: float = 2.0):
         if not self._running:
             return
         self._running = False
+        self._stop_event.set()
         logger.info("Surveillance arrêtée.")
+        # Ne bloque pas indéfiniment.
+        t = self._thread
+        if t and t.is_alive() and threading.current_thread() is not t:
+            t.join(timeout=join_timeout)
         self._emit_status(force=True)
 
     def set_auto_record(self, enabled: bool):
@@ -140,46 +140,55 @@ class GameMonitor:
 
     # ---------- manual commands ----------
     def manual_start_record(self) -> bool:
-        if is_recording():
-            return True
-        if not is_obs_running() and not launch_obs():
-            logger.error("Démarrage manuel impossible : OBS introuvable.")
-            return False
-        if not test_obs_connection():
-            logger.error("Démarrage manuel impossible : OBS injoignable.")
-            return False
-        ok = start_record()
-        if ok:
-            self._record_start_ts = time.time()
-            with self._state_lock:
+        with self._state_lock:
+            if is_recording():
+                self._state = GameState.MATCH_ACTIVE
+                return True
+            if not is_obs_running() and not launch_obs():
+                logger.error("Démarrage manuel impossible : OBS introuvable.")
+                self._last_error = "OBS introuvable / impossible à lancer."
+                return False
+            if not test_obs_connection():
+                logger.error("Démarrage manuel impossible : OBS injoignable.")
+                self._last_error = "OBS injoignable."
+                return False
+            ok = start_record()
+            if ok:
+                self._record_start_ts = time.time()
+                if not self._match.get("match_id"):
+                    self._match["match_id"] = self._make_local_match_id()
                 self._match["started_at"] = self._record_start_ts
-                self._match["match_id"] = self._make_local_match_id()
-                if self._state not in (GameState.MATCH_ACTIVE,):
-                    self._state = GameState.MATCH_ACTIVE
+                self._state = GameState.MATCH_ACTIVE
+            else:
+                self._last_error = "OBS a refusé de démarrer l'enregistrement."
         self._emit_status(force=True)
         return ok
 
     def manual_stop_record(self) -> bool:
-        if not is_recording():
-            return True
+        with self._state_lock:
+            if not is_recording():
+                # État déjà arrêté, on tente quand même de finaliser pour
+                # traiter un éventuel match en cours.
+                self._state = GameState.FINALIZING
+            else:
+                self._state = GameState.RECORDING_STOPPING
         ok = stop_record()
         if ok:
             self._record_start_ts = None
-            with self._state_lock:
-                self._state = GameState.FINALIZING
-            self._finalize_current_match()
+        self._finalize_current_match()
         self._emit_status(force=True)
         return ok
 
     # ---------- main loop ----------
     def _loop(self):
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             try:
                 self._tick()
             except Exception as e:
                 self._last_error = str(e)
                 logger.error("Erreur inattendue dans la boucle de surveillance", e)
-            time.sleep(self._poll_interval())
+            # Attend le prochain tick ou l'arrêt.
+            self._stop_event.wait(self._poll_interval())
 
     def _poll_interval(self) -> float:
         try:
@@ -190,7 +199,7 @@ class GameMonitor:
     def _tick(self):
         cfg = self._get_cfg()
         self._auto_record = bool(cfg.get("auto_record", True))
-        # Recharge cfg.OBS_EXE_PATH si changé
+        # Recharge cfg.OBS_EXE_PATH si changé.
         preferred = cfg.get("obs_exe_path")
         if preferred:
             try:
@@ -207,6 +216,7 @@ class GameMonitor:
         except Exception:
             pass
 
+        # Lecture session (cache court).
         try:
             session = self._valo.get_current_session(use_cache=True)
         except RiotClientNotRunning:
@@ -216,7 +226,22 @@ class GameMonitor:
             logger.error(f"Erreur API Riot : {e}")
             session = None
 
+        # Si pas de session ET Valorant pas running ET on n'est pas en cours
+        # d'enregistrement : on note IDLE. Sinon on tente de finaliser.
+        val_running, riot_running, _ = self._valo.processes_snapshot(use_cache=True)
+        if session is None and not val_running and not is_recording():
+            with self._state_lock:
+                if self._state != GameState.IDLE:
+                    self._state = GameState.IDLE
+                    self._previous_state = None
+            self._last_error = None
+            self._current_session = None
+            self._emit_status()
+            return
+
         if session is None:
+            # Pas de session lisible (lockfile illisible, etc.) mais on a
+            # peut-être un enregistrement en cours.
             self._on_valorant_not_running()
             self._emit_status()
             return
@@ -226,18 +251,19 @@ class GameMonitor:
         self._handle_session_state(session, cfg)
 
     def _on_valorant_not_running(self):
-        # Si on était en cours d'enregistrement, on tente d'arrêter proprement.
-        if is_recording() and self._state == GameState.MATCH_ACTIVE:
-            logger.warning("Valorant semble fermé pendant une partie : arrêt du record.")
-            try:
-                stop_record()
-            except Exception:
-                pass
-            self._state = GameState.MATCH_FINISHING
-            self._finalize_current_match(forced=True)
-        if self._state != GameState.IDLE:
-            self._state = GameState.IDLE
-            self._previous_state = None
+        with self._state_lock:
+            recording_active = is_recording()
+            if recording_active and self._state == GameState.MATCH_ACTIVE:
+                logger.warning("Connexion Riot perdue pendant une partie : arrêt du record.")
+                try:
+                    stop_record()
+                except Exception:
+                    pass
+                self._state = GameState.MATCH_FINISHING
+                self._record_start_ts = None
+            if self._state != GameState.IDLE:
+                self._state = GameState.IDLE
+                self._previous_state = None
 
     def _handle_session_state(self, session, cfg):
         prev = self._previous_state
@@ -247,11 +273,17 @@ class GameMonitor:
 
         with self._state_lock:
             if is_recordable and prev not in RECORDABLE_STATES:
-                self._on_match_start(session, cfg)
+                # Anti-double-déclenchement
+                if self._state == GameState.MATCH_ACTIVE and is_recording():
+                    logger.debug("Transition ignorée (déjà en MATCH_ACTIVE).")
+                else:
+                    self._on_match_start(session, cfg)
             elif is_loading and prev in RECORDABLE_STATES:
-                self._on_match_end(session, cfg)
+                if self._state == GameState.IDLE:
+                    logger.debug("Transition ignorée (déjà IDLE).")
+                else:
+                    self._on_match_end(session, cfg)
             elif is_loading:
-                # simple transition en chargement / menu
                 if self._state not in (GameState.MATCH_LOADING, GameState.VALORANT_LAUNCHED):
                     self._state = GameState.MATCH_LOADING
         self._previous_state = s
@@ -295,7 +327,8 @@ class GameMonitor:
                 "ally_score": session.ally_score,
                 "enemy_score": session.enemy_score,
                 "result": "Inconnu",
-                "mode": session.queue_id,
+                "mode": session.mode or session.queue_id,
+                "queue_id": session.queue_id,
                 "video_path": None,
                 "file_size_bytes": 0,
             }
@@ -303,7 +336,7 @@ class GameMonitor:
                 "match_id": self._match["match_id"],
                 "map": self._match["map"],
                 "agent": self._match["agent"],
-                "mode": self._match["mode"],
+                "mode": self._match.get("mode"),
             })
         else:
             logger.error("OBS a refusé de démarrer l'enregistrement.")
@@ -311,8 +344,6 @@ class GameMonitor:
 
     def _on_match_end(self, session, cfg):
         logger.info("Fin de partie détectée.")
-        if self._state == GameState.IDLE:
-            return
         self._state = GameState.MATCH_FINISHING
         if is_recording():
             self._state = GameState.RECORDING_STOPPING
@@ -325,109 +356,154 @@ class GameMonitor:
 
     # ---------- finalisation ----------
     def _finalize_current_match(self, session=None, forced: bool = False):
-        if self._state == GameState.COMPLETED:
+        """Finalise le match en cours. Idempotent grâce à _finalize_lock."""
+        if not self._finalize_lock.acquire(blocking=False):
+            # Une finalisation est déjà en cours.
+            logger.debug("Finalisation déjà en cours, ignorée.")
             return
+        try:
+            self._finalize_current_match_locked(session=session, forced=forced)
+        finally:
+            self._finalize_lock.release()
+
+    def _finalize_current_match_locked(self, session=None, forced: bool = False):
+        with self._state_lock:
+            if self._state == GameState.COMPLETED:
+                return
+            current_match = dict(self._match)
+            current_state = self._state
+            self._state = GameState.FINALIZING
+
         cfg = self._get_cfg()
         # Met à jour le score si on a la session
         if session is not None:
-            self._match["score"] = session.score or self._match["score"]
-            self._match["ally_score"] = session.ally_score or self._match["ally_score"]
-            self._match["enemy_score"] = session.enemy_score or self._match["enemy_score"]
-            if self._match.get("map", "Inconnu") in (None, "Inconnu", ""):
-                self._match["map"] = session.map
-            if self._match.get("agent", "Inconnu") in (None, "Inconnu", ""):
-                self._match["agent"] = session.agent
+            if session.score:
+                current_match["score"] = session.score
+            if session.ally_score:
+                current_match["ally_score"] = session.ally_score
+            if session.enemy_score:
+                current_match["enemy_score"] = session.enemy_score
+            if current_match.get("map") in (None, "Inconnu", ""):
+                current_match["map"] = session.map
+            if current_match.get("agent") in (None, "Inconnu", ""):
+                current_match["agent"] = session.agent
+            if session.mode and not current_match.get("mode"):
+                current_match["mode"] = session.mode
+
         # Calcul du résultat
-        if self._match["ally_score"] > self._match["enemy_score"]:
+        if current_match["ally_score"] > current_match["enemy_score"]:
             result = "Victoire"
-        elif self._match["ally_score"] < self._match["enemy_score"]:
+        elif current_match["ally_score"] < current_match["enemy_score"]:
             result = "Defaite"
         else:
             result = "Inconnu"
-        self._match["result"] = result
+        current_match["result"] = result
+
         # Détermine le dossier de sortie (OBS si possible, sinon config)
-        obs_folder = get_recording_path() or cfg.get("obs_folder", os.path.expanduser("~/Videos"))
+        try:
+            obs_folder = get_recording_path() or cfg.get("obs_folder", os.path.expanduser("~/Videos"))
+        except Exception:
+            obs_folder = cfg.get("obs_folder", os.path.expanduser("~/Videos"))
+
+        if not obs_folder or not isinstance(obs_folder, str):
+            obs_folder = os.path.expanduser("~/Videos")
+        obs_folder = os.path.expanduser(obs_folder)
+
         # Attente du fichier finalisé
-        started = self._match.get("started_at") or 0
-        finalized = file_manager.wait_for_finalized_recording(obs_folder,
-                                                              since_ts=started,
-                                                              timeout=15.0,
-                                                              stable_seconds=2.0)
+        started = current_match.get("started_at") or 0
+        try:
+            finalized = file_manager.wait_for_finalized_recording(
+                obs_folder,
+                since_ts=started,
+                timeout=15.0,
+                stable_seconds=2.0,
+            )
+        except Exception as e:
+            logger.error(f"Erreur attente finalisation: {e}")
+            finalized = None
+
         video_path = None
         file_size = 0
         if finalized:
             template = cfg.get("file_naming", "Valorant_{date}_{map}_{agent}_{score}_{result}")
-            video_path, file_size = file_manager.rename_recording_with_options(
-                obs_folder, self._match["map"], self._match["agent"],
-                self._match["score"], result, template=template, file_path=finalized,
-            )
+            try:
+                video_path, file_size = file_manager.rename_recording_with_options(
+                    obs_folder, current_match["map"], current_match["agent"],
+                    current_match["score"], result, template=template, file_path=finalized,
+                )
+            except Exception as e:
+                logger.error(f"Erreur renommage: {e}")
             if video_path and os.path.exists(video_path):
-                file_size = file_size or os.path.getsize(video_path)
-        self._match["video_path"] = video_path
-        self._match["file_size_bytes"] = file_size
+                try: file_size = file_size or os.path.getsize(video_path)
+                except OSError: pass
+
+        current_match["video_path"] = video_path
+        current_match["file_size_bytes"] = file_size
         if started:
-            self._match["duration_s"] = int(time.time() - started)
-        # Date ISO
+            current_match["duration_s"] = int(time.time() - started)
         date_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+
         # Insertion en base
-        if self._match["match_id"]:
+        if current_match["match_id"]:
             try:
                 self._repo.upsert_match({
-                    "match_id": self._match["match_id"],
+                    "match_id": current_match["match_id"],
                     "date": date_iso,
-                    "map_name": self._match["map"],
-                    "agent": self._match["agent"],
-                    "score": self._match["score"],
-                    "ally_score": self._match["ally_score"],
-                    "enemy_score": self._match["enemy_score"],
+                    "map_name": current_match["map"],
+                    "agent": current_match["agent"],
+                    "score": current_match["score"],
+                    "ally_score": current_match["ally_score"],
+                    "enemy_score": current_match["enemy_score"],
                     "result": result,
-                    "mode": self._match["mode"],
-                    "duration_seconds": self._match["duration_s"],
+                    "mode": current_match.get("mode"),
+                    "queue_id": current_match.get("queue_id"),
+                    "duration_seconds": current_match["duration_s"],
                     "video_path": video_path,
                     "file_size_bytes": file_size,
                     "status": "completed" if video_path else "failed",
                 })
-                self._last_completed_match_id = self._match["match_id"]
+                self._last_completed_match_id = current_match["match_id"]
             except Exception as e:
                 logger.error(f"Erreur écriture BDD : {e}")
-        # Nettoyage
+
+        # Nettoyage (en protégeant le fichier en cours de finalisation)
         try:
-            file_manager.clean_old_recordings(obs_folder, float(cfg.get("max_size_gb", 50)))
-        except Exception:
-            pass
-        # Cooldown
+            protected = [video_path] if video_path else None
+            file_manager.clean_old_recordings(obs_folder, float(cfg.get("max_size_gb", 50)),
+                                              protected_paths=protected)
+        except Exception as e:
+            logger.debug(f"Nettoyage ancien: {e}")
+
+        # Cooldown anti-rebond
         self._match_cooldown_until = time.time() + 30
+
         # Émission événement
         self._emit_event("match_ended", {
-            "match_id": self._match["match_id"],
-            "map": self._match["map"],
-            "agent": self._match["agent"],
-            "score": self._match["score"],
+            "match_id": current_match["match_id"],
+            "map": current_match["map"],
+            "agent": current_match["agent"],
+            "score": current_match["score"],
             "result": result,
             "path": video_path,
-            "duration_seconds": self._match["duration_s"],
+            "duration_seconds": current_match["duration_s"],
         })
+
         # Reset état
-        self._state = GameState.COMPLETED
-        self._match = self._new_match_template()
-        # Après un petit délai on revient à LOADING si on est toujours en match
-        time.sleep(0.5)
-        if self._running and self._state == GameState.COMPLETED:
-            self._state = GameState.VALORANT_LAUNCHED
+        with self._state_lock:
+            self._state = GameState.COMPLETED
+            self._match = self._new_match_template()
 
     def _new_match_template(self) -> Dict[str, Any]:
         return {
             "started_at": None, "ended_at": None, "duration_s": 0,
             "match_id": None, "map": "Inconnu", "agent": "Inconnu",
             "score": "0-0", "ally_score": 0, "enemy_score": 0,
-            "result": "Inconnu", "mode": None,
+            "result": "Inconnu", "mode": None, "queue_id": None,
             "video_path": None, "file_size_bytes": 0,
         }
 
     def _make_local_match_id(self, session=None) -> str:
-        # Si on a un queueId + score significatif, on tente un identifiant
-        # prévisible et déterministe par session.
-        if session is not None and session.queue_id and session.map != "Inconnu":
+        if session is not None and session.queue_id and session.map not in (None, "Inconnu", ""):
             return f"{config.LOCAL_MATCH_PREFIX}{int(time.time())}_{session.queue_id}"
         return f"{config.LOCAL_MATCH_PREFIX}{uuid.uuid4().hex[:12]}"
 
@@ -439,29 +515,37 @@ class GameMonitor:
 
     def snapshot(self) -> Dict[str, Any]:
         cfg = self._get_cfg()
-        obs = get_obs_status()
+        try:
+            obs = get_obs_status()
+        except Exception as e:
+            logger.debug(f"obs status error: {e}")
+            obs = {"running": False, "connected": False, "recording": False,
+                   "scene": None, "version": None, "websocket_version": None,
+                   "obs_exe_path": None, "output_dir": None}
         s = self._current_session
-        return {
-            "monitoring": self._running,
-            "auto_record": self._auto_record,
-            "state": self._state,
-            "obs": obs,
-            "valorant_running": self._valo.is_valorant_running(),
-            "riot_connected": self._valo.riot_lockfile_present() and self._valo.is_riot_running(),
-            "session_state": s.state if s else "Indisponible",
-            "session_label": s.state_label if s else "Indisponible",
-            "map": s.map if s else "Inconnu",
-            "agent": s.agent if s else "Inconnu",
-            "score": s.score if s else "0-0",
-            "ally_score": s.ally_score if s else 0,
-            "enemy_score": s.enemy_score if s else 0,
-            "mode": s.queue_id if s else None,
-            "recording": is_recording(),
-            "recording_duration": self.record_duration(),
-            "output_dir": obs.get("output_dir") or cfg.get("obs_folder", ""),
-            "last_error": self._last_error,
-            "current_match_id": self._match.get("match_id"),
-        }
+        with self._state_lock:
+            return {
+                "monitoring": self._running,
+                "auto_record": self._auto_record,
+                "state": self._state.value,
+                "obs": obs,
+                "valorant_running": self._valo.is_valorant_running(),
+                "riot_connected": self._valo.riot_lockfile_present() and self._valo.is_riot_running(),
+                "session_state": s.state if s else "Indisponible",
+                "session_label": s.state_label if s else "Indisponible",
+                "map": s.map if s else "Inconnu",
+                "agent": s.agent if s else "Inconnu",
+                "score": s.score if s else "0-0",
+                "ally_score": s.ally_score if s else 0,
+                "enemy_score": s.enemy_score if s else 0,
+                "mode": s.mode if s else None,
+                "queue_id": s.queue_id if s else None,
+                "recording": is_recording(),
+                "recording_duration": self.record_duration(),
+                "output_dir": obs.get("output_dir") or cfg.get("obs_folder", ""),
+                "last_error": self._last_error,
+                "current_match_id": self._match.get("match_id"),
+            }
 
     def _emit_status(self, force: bool = False):
         try:
@@ -470,7 +554,10 @@ class GameMonitor:
             self._last_error = str(e)
             return
         import json as _json
-        js = _json.dumps(data, sort_keys=True, default=str)
+        try:
+            js = _json.dumps(data, sort_keys=True, default=str)
+        except Exception:
+            return
         if not force and js == self._last_status_json:
             return
         self._last_status_json = js
@@ -480,7 +567,7 @@ class GameMonitor:
             logger.error("Erreur emission événement status", e)
 
 
-# Compatibilité ascendante : alias historique.
+# Compatibilité ascendante
 def is_valorant_running() -> bool:
     return ValorantDataService.is_valorant_running()
 

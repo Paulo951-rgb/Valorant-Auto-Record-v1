@@ -2,12 +2,12 @@
 
 // backend_bridge.js
 // Gère le cycle de vie du backend Python et la communication JSON-lines.
-// Lancé dans le main process Electron.
 
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
+const { EventEmitter } = require('events');
 
 /**
  * Détermine la commande et les arguments à lancer.
@@ -15,18 +15,23 @@ const readline = require('readline');
  *   1. PYTHON_EXEC (env) pointant vers un exécutable backend PyInstaller.
  *   2. backend.exe/.sh packagé dans les ressources (mode distribué).
  *   3. interpréteur Python système + backend.py (dev ou ressources .py).
- * Retourne { cmd, args, backendDir }.
  */
 function resolveLaunch() {
   const isWin = process.platform === 'win32';
 
   // 1. Variable d'environnement explicite.
   if (process.env.PYTHON_EXEC && fs.existsSync(process.env.PYTHON_EXEC)) {
-    return { cmd: process.env.PYTHON_EXEC, args: [], backendDir: path.dirname(process.env.PYTHON_EXEC) };
+    return {
+      cmd: process.env.PYTHON_EXEC,
+      args: [],
+      backendDir: path.dirname(process.env.PYTHON_EXEC),
+    };
   }
 
   // 2. Backend déjà compilé (PyInstaller) dans les ressources.
-  const resPythonDir = process.resourcesPath ? path.join(process.resourcesPath, 'python') : null;
+  const resPythonDir = process.resourcesPath
+    ? path.join(process.resourcesPath, 'python')
+    : null;
   if (resPythonDir) {
     const exeName = isWin ? 'backend.exe' : 'backend';
     const packagedExe = path.join(resPythonDir, exeName);
@@ -36,8 +41,6 @@ function resolveLaunch() {
   }
 
   // 3. Interpréteur Python système + backend.py.
-  //    - En distribué : backend.py est dans resourcesPath/python/
-  //    - En dev       : backend.py est dans <projet>/python/
   let backendScript;
   if (resPythonDir && fs.existsSync(path.join(resPythonDir, 'backend.py'))) {
     backendScript = path.join(resPythonDir, 'backend.py');
@@ -48,49 +51,38 @@ function resolveLaunch() {
   return { cmd: pythonExe, args: [backendScript], backendDir: path.dirname(backendScript) };
 }
 
-class BackendBridge {
+class BackendBridge extends EventEmitter {
   constructor() {
+    super();
+    this.setMaxListeners(50);
     this.process = null;
     this.rl = null;
-    this.pending = new Map(); // id -> {resolve, reject, timer}
+    this.pending = new Map();
     this.nextId = 1;
-    this.listeners = {
-      status: new Set(),
-      log: new Set(),
-      ready: new Set(),
-      error: new Set(),
-      closed: new Set(),
-      config_changed: new Set(),
-      match_started: new Set(),
-      match_ended: new Set(),
-    };
     this.isReady = false;
     this.isRunning = false;
+
     this.restartAttempts = 0;
     this.maxRestartAttempts = 5;
     this.autoRestart = true;
+
     this._restarting = false;
-    this._exited = false;
+    this._exited = true;
+    this._disposed = false;
+    this._exitTimer = null;
   }
 
-  on(event, cb) {
-    if (!this.listeners[event]) this.listeners[event] = new Set();
-    this.listeners[event].add(cb);
-    return () => this.listeners[event].delete(cb);
-  }
-
+  // ---------- event emission ----------
   _emit(event, data) {
-    (this.listeners[event] || []).forEach((cb) => {
-      try {
-        cb(data);
-      } catch (e) {
-        console.error('Erreur listener', event, e);
-      }
-    });
+    try { this.emit(event, data); } catch (e) { /* listener errors */ }
   }
 
+  // ---------- lifecycle ----------
   start() {
+    if (this._disposed) return;
     if (this.process) return;
+    this._exited = false;
+
     const { cmd, args, backendDir } = resolveLaunch();
 
     if (!args.length && !fs.existsSync(cmd)) {
@@ -102,68 +94,80 @@ class BackendBridge {
       return;
     }
 
+    let proc;
     try {
-      this.process = spawn(cmd, args, {
+      proc = spawn(cmd, args, {
         cwd: backendDir,
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
         windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (e) {
       this._emit('error', { message: `Impossible de lancer Python : ${e.message}` });
       return;
     }
 
-    this._exited = false;
+    this.process = proc;
     this.isRunning = true;
-    this.rl = readline.createInterface({ input: this.process.stdout });
 
-    this.rl.on('line', (line) => this._handleLine(line));
-
-    this.process.stderr.on('data', (data) => {
-      // Les logs/traces Python vont sur stderr (redirigés depuis stdout côté Python).
-      const text = data.toString().trim();
-      if (text) {
-        this._emit('log', {
-          timestamp: new Date().toTimeString().slice(0, 8),
-          level: 'DEBUG',
-          message: text,
-          raw: text,
-          fromStderr: true,
-        });
-      }
-    });
-
-    this.process.on('error', (err) => {
+    // Erreur asynchrone de spawn (exécutable introuvable)
+    proc.once('error', (err) => {
       this._emit('error', { message: `Erreur de processus Python : ${err.message}` });
       this._handleExit();
     });
 
-    this.process.on('exit', (code, signal) => {
+    proc.on('exit', (code, signal) => {
       this._emit('closed', { code, signal });
       this._handleExit();
     });
+
+    // Stderr : logs et traces Python (DEBUG dans l'UI).
+    proc.stderr.on('data', (data) => {
+      const text = data.toString().replace(/\r/g, '').trim();
+      if (!text) return;
+      // Multi-ligne possible : on émet chaque ligne.
+      text.split('\n').forEach((line) => {
+        if (line.trim()) {
+          this._emit('log', {
+            timestamp: new Date().toTimeString().slice(0, 8),
+            level: 'DEBUG',
+            message: line,
+            raw: line,
+            fromStderr: true,
+          });
+        }
+      });
+    });
+
+    // Stdout : JSON-lines, une réponse ou notification par ligne.
+    this.rl = readline.createInterface({ input: proc.stdout });
+    this.rl.on('line', (line) => this._handleLine(line));
+    this.rl.on('close', () => { this.rl = null; });
   }
 
   _handleExit() {
-    // 'error' puis 'exit' peuvent se déclencher consécutivement pour le même
-    // processus ; on garde un drapeau pour ne nettoyer/quitter qu'une fois.
     if (this._exited) return;
     this._exited = true;
 
     const wasRunning = this.isRunning;
     this.isRunning = false;
     this.isReady = false;
-    this.process = null;
+
     if (this.rl) {
       try { this.rl.close(); } catch (e) { /* ignore */ }
       this.rl = null;
     }
+    this.process = null;
+
     // Rejette les requêtes en attente.
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.reject(new Error('Backend arrêté avant réponse.'));
+      try { entry.reject(new Error('Backend arrêté avant réponse.')); } catch (e) { /* ignore */ }
     }
     this.pending.clear();
+
+    if (this._disposed) return;
+    if (this._restarting) return; // un restart() manuel est en cours
 
     if (wasRunning && this.autoRestart && this.restartAttempts < this.maxRestartAttempts) {
       this.restartAttempts++;
@@ -174,9 +178,10 @@ class BackendBridge {
         message: `Backend arrêté. Reconnexion dans ${delay / 1000}s (tentative ${this.restartAttempts}/${this.maxRestartAttempts}).`,
         raw: '',
       });
-      setTimeout(() => {
-        this._exited = false;  // autorise un futur cleanup
-        this.start();
+      this._exitTimer = setTimeout(() => {
+        this._exitTimer = null;
+        this._exited = false;
+        try { this.start(); } catch (e) { /* ignore */ }
       }, delay);
     } else if (wasRunning && this.restartAttempts >= this.maxRestartAttempts) {
       this._emit('error', { message: 'Backend injoignable après plusieurs tentatives.' });
@@ -184,49 +189,48 @@ class BackendBridge {
   }
 
   _handleLine(line) {
+    if (!line) return;
     let obj;
     try {
       obj = JSON.parse(line);
     } catch (e) {
-      return; // ligne non-JSON ignorée
+      // Ligne non JSON (ex: print accidentel du backend)
+      this._emit('log', {
+        timestamp: new Date().toTimeString().slice(0, 8),
+        level: 'DEBUG',
+        message: `[stdout non-JSON] ${line}`,
+        raw: line,
+      });
+      return;
     }
+    if (!obj || typeof obj !== 'object') return;
 
-    if (obj.id !== undefined) {
-      // Réponse à une requête.
-      const entry = this.pending.get(obj.id);
+    // Réponse à une requête.
+    if (obj.id !== undefined && obj.id !== null) {
+      const entry = this.pending.get(String(obj.id));
       if (entry) {
         clearTimeout(entry.timer);
-        this.pending.delete(obj.id);
+        this.pending.delete(String(obj.id));
         if (obj.error) {
-          entry.reject(new Error(obj.error));
+          try { entry.reject(new Error(String(obj.error))); } catch (e) { /* ignore */ }
         } else {
-          entry.resolve(obj.result);
+          try { entry.resolve(obj.result); } catch (e) { /* ignore */ }
         }
       }
       return;
     }
 
+    // Notification.
     if (obj.event) {
       if (obj.event === 'ready') {
         this.isReady = true;
         this.restartAttempts = 0;
-        this._emit('ready', obj.data);
-      } else if (obj.event === 'status') {
-        this._emit('status', obj.data);
-      } else if (obj.event === 'log') {
-        this._emit('log', obj.data);
-      } else if (obj.event === 'config_changed') {
-        this._emit('config_changed', obj.data);
-      } else if (obj.event === 'match_started') {
-        this._emit('match_started', obj.data);
-      } else if (obj.event === 'match_ended') {
-        this._emit('match_ended', obj.data);
-      } else if (obj.event === 'error') {
-        this._emit('error', obj.data);
       }
+      this._emit(obj.event, obj.data);
     }
   }
 
+  // ---------- requests ----------
   /**
    * Envoie une commande au backend et renvoie une Promise.
    * @param {string} method
@@ -235,6 +239,7 @@ class BackendBridge {
    */
   send(method, params = {}, timeout = 15000) {
     return new Promise((resolve, reject) => {
+      if (this._disposed) { reject(new Error('Bridge disposé.')); return; }
       if (!this.process || !this.isRunning) {
         reject(new Error('Backend non démarré.'));
         return;
@@ -242,13 +247,27 @@ class BackendBridge {
       const id = String(this.nextId++);
       const req = JSON.stringify({ id, method, params }) + '\n';
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Délai dépassé pour '${method}'.`));
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`Délai dépassé pour '${method}'.`));
+        }
       }, timeout);
 
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method });
       try {
-        this.process.stdin.write(req);
+        if (!this.process.stdin || this.process.stdin.destroyed) {
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(new Error('stdin fermé.'));
+          return;
+        }
+        this.process.stdin.write(req, (err) => {
+          if (err) {
+            clearTimeout(timer);
+            this.pending.delete(id);
+            reject(new Error(`Écriture stdin impossible : ${err.message}`));
+          }
+        });
       } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -257,65 +276,86 @@ class BackendBridge {
     });
   }
 
-  // Raccourcis typés.
-  ping() { return this.send('ping'); }
-  getStatus() { return this.send('get_status'); }
-  getConfig() { return this.send('get_config'); }
-  saveConfig(cfg) { return this.send('save_config', cfg); }
-  startMonitoring() { return this.send('start_monitoring'); }
-  stopMonitoring() { return this.send('stop_monitoring'); }
-  setAutoRecord(enabled) { return this.send('set_auto_record', { enabled }); }
-  startRecord() { return this.send('start_record'); }
-  stopRecord() { return this.send('stop_record'); }
-  testObs() { return this.send('test_obs'); }
-  reconnectObs() { return this.send('reconnect_obs'); }
-  launchObs() { return this.send('launch_obs'); }
-  getHistory() { return this.send('get_history'); }
-  getValoState() { return this.send('get_valo_state'); }
-
+  // ---------- restart / dispose ----------
   /**
-   * Relance proprement le backend (bouton "Relancer le backend").
+   * Relance proprement le backend.
    */
   async restart() {
-    if (this._restarting) return;
+    if (this._disposed) return false;
+    if (this._restarting) return false;
     this._restarting = true;
     this.restartAttempts = 0;
-    // Désactive l'auto-restart le temps du redémarrage pour éviter un double spawn.
-    this.autoRestart = false;
-    if (this.process) {
-      this._exited = false;  // autorise _handleExit à nettoyer le processus quitté
-      try { this.process.kill(); } catch (e) { /* ignore */ }
-      // attend que le processus se termine effectivement
-      await new Promise((r) => setTimeout(r, 500));
+
+    // Annule l'auto-restart en cours.
+    if (this._exitTimer) {
+      clearTimeout(this._exitTimer);
+      this._exitTimer = null;
     }
-    this._handleExitCleanup();
-    this._exited = false;
+
+    if (this.process) {
+      // On évite que _handleExit déclenche un auto-restart en parallèle.
+      this.autoRestart = false;
+      try { this.process.kill(); } catch (e) { /* ignore */ }
+      // Attend que le process se termine réellement (max 2s).
+      const t0 = Date.now();
+      while (this.process && Date.now() - t0 < 2000) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    // Nettoyage forcé (sans déclencher de restart).
+    this._forceCleanup();
     this.autoRestart = true;
     this._restarting = false;
-    this.start();
+
+    try { this.start(); } catch (e) { /* ignore */ }
+    return true;
   }
 
-  _handleExitCleanup() {
-    if (this.rl) { try { this.rl.close(); } catch (e) { /* ignore */ } this.rl = null; }
+  _forceCleanup() {
+    if (this.rl) {
+      try { this.rl.close(); } catch (e) { /* ignore */ }
+      this.rl = null;
+    }
     this.process = null;
     this.isRunning = false;
     this.isReady = false;
-  }
-
-  dispose() {
-    this.autoRestart = false;
-    this._restarting = false;
-    if (this.process) {
-      try { this.process.kill(); } catch (e) { /* ignore */ }
-    }
-    this._handleExitCleanup();
     this._exited = true;
-    for (const [id, entry] of this.pending) {
+    for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.reject(new Error('Backend disposé.'));
+      try { entry.reject(new Error('Backend réinitialisé.')); } catch (e) { /* ignore */ }
     }
     this.pending.clear();
   }
+
+  dispose() {
+    this._disposed = true;
+    this.autoRestart = false;
+    this._restarting = false;
+    if (this._exitTimer) {
+      clearTimeout(this._exitTimer);
+      this._exitTimer = null;
+    }
+    if (this.process) {
+      try { this.process.kill(); } catch (e) { /* ignore */ }
+    }
+    this._forceCleanup();
+  }
 }
+
+// Raccourcis typés (compat ascendante).
+BackendBridge.prototype.ping = function () { return this.send('ping'); };
+BackendBridge.prototype.getStatus = function () { return this.send('get_status'); };
+BackendBridge.prototype.getConfig = function () { return this.send('get_config'); };
+BackendBridge.prototype.saveConfig = function (cfg) { return this.send('save_config', cfg); };
+BackendBridge.prototype.startMonitoring = function () { return this.send('start_monitoring'); };
+BackendBridge.prototype.stopMonitoring = function () { return this.send('stop_monitoring'); };
+BackendBridge.prototype.setAutoRecord = function (enabled) { return this.send('set_auto_record', { enabled }); };
+BackendBridge.prototype.startRecord = function () { return this.send('start_record'); };
+BackendBridge.prototype.stopRecord = function () { return this.send('stop_record'); };
+BackendBridge.prototype.testObs = function () { return this.send('test_obs'); };
+BackendBridge.prototype.reconnectObs = function () { return this.send('reconnect_obs'); };
+BackendBridge.prototype.launchObs = function () { return this.send('launch_obs'); };
+BackendBridge.prototype.getHistory = function () { return this.send('get_history'); };
+BackendBridge.prototype.getValoState = function () { return this.send('get_valo_state'); };
 
 module.exports = { BackendBridge, resolveLaunch };

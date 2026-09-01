@@ -312,10 +312,13 @@ def cmd_test_obs(params):
 
 
 def cmd_reconnect_obs(params):
-    import obs_controller as oc
-    oc._service._client = None
-    oc._recording_local["value"] = False
-    return {"connected": test_obs_connection(), "running": is_obs_running()}
+    # Force une reconnexion propre (réinitialise le client mis en cache).
+    from obs_service import OBSService
+    # On accède au service via le shim pour conserver l'instance unique.
+    from obs_controller import _service as _shared_service
+    _shared_service.reset_client()
+    ok = test_obs_connection()
+    return {"connected": ok, "running": is_obs_running()}
 
 
 def cmd_launch_obs(params):
@@ -361,7 +364,8 @@ def cmd_update_match(params):
 
 def cmd_get_valo_state(params):
     try:
-        return {"ok": True, "data": get_current_state(debug=config.DEBUG)}
+        state = get_current_state(debug=config.DEBUG)
+        return {"ok": True, "data": state}
     except RiotClientNotRunning:
         return {"ok": False, "error": "Riot Client non détecté (Valorant éteint)."}
     except Exception as e:
@@ -371,25 +375,49 @@ def cmd_get_valo_state(params):
 def cmd_app_diagnostics(params):
     """Page de diagnostic destinée aux utilisateurs avancés."""
     cfg = store.get()
-    installations = discover_obs()
+    try:
+        installations = discover_obs()
+    except Exception as e:
+        installations = []
+        logger.debug(f"discover_obs error: {e}")
     try:
         rec_path = get_recording_path()
     except Exception:
         rec_path = None
+    try:
+        obs_status = get_obs_status()
+    except Exception as e:
+        obs_status = {"running": False, "connected": False, "recording": False,
+                      "scene": None, "version": None, "websocket_version": None,
+                      "obs_exe_path": None, "output_dir": None}
+        logger.debug(f"obs_status error: {e}")
     db_path = os.path.abspath(repository._db_path)
     log_path = LOG_FILE
-    return {
+    out = {
         "config": cfg,
         "obs_installations": [
             {"path": i.path, "version": i.version, "running": i.running}
             for i in installations
         ],
-        "obs_status": get_obs_status(),
+        "obs_status": obs_status,
         "recording_path": rec_path,
         "db_path": db_path,
         "log_path": log_path,
-        "session_state": get_current_state(debug=config.DEBUG) if cfg.get("log_level") == "DEBUG" else None,
     }
+    if cfg.get("log_level") == "DEBUG":
+        try:
+            out["session_state"] = get_current_state(debug=True)
+        except Exception as e:
+            out["session_state"] = {"error": str(e)}
+    return out
+
+
+def cmd_quit(params):
+    """Demande au processus Python de se terminer proprement (utilisé
+    par Electron pour before-quit)."""
+    import threading as _t
+    _t.Timer(0.05, lambda: os._exit(0)).start()
+    return {"quit": True}
 
 
 HANDLERS = {
@@ -413,6 +441,7 @@ HANDLERS = {
     "update_match": cmd_update_match,
     "get_valo_state": cmd_get_valo_state,
     "app_diagnostics": cmd_app_diagnostics,
+    "quit": cmd_quit,
 }
 
 
@@ -439,13 +468,32 @@ def _handle_request(line):
     if handler is None:
         _send_response(req_id, None, error=f"Méthode inconnue : {method}")
         return
-    try:
-        result = handler(params)
-        _send_response(req_id, result)
-    except Exception as e:
-        _log_to_file(f"Erreur handler {method} : {e}\n{traceback.format_exc()}")
+    # Exécute le handler dans un thread pour ne jamais bloquer stdin.
+    import threading as _threading
+    result_box: Dict[str, Any] = {}
+
+    def _runner():
+        try:
+            result_box["result"] = handler(params)
+        except Exception as e:
+            result_box["error"] = e
+            result_box["tb"] = traceback.format_exc()
+
+    t = _threading.Thread(target=_runner, daemon=True)
+    t.start()
+    # Timeout dur : 5 min pour les handlers longs (launch_obs, finalize).
+    timeout_s = 300
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        _send_response(req_id, None, error=f"Timeout ({timeout_s}s) sur '{method}'.")
+        return
+    if "error" in result_box:
+        e = result_box["error"]
+        _log_to_file(f"Erreur handler {method} : {e}\n{result_box.get('tb','')}")
         logger.error(f"Erreur lors de l'exécution de '{method}'", e)
         _send_response(req_id, None, error=str(e))
+    else:
+        _send_response(req_id, result_box.get("result"))
 
 
 def _stdin_loop():
