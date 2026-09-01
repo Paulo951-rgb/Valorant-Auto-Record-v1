@@ -1,39 +1,28 @@
-# ============================================================
-# CONFIGURATION - VALORANT AUTO RECORD OBS
-# ============================================================
-
-
-# ============================================================
-# OBS WEBSOCKET
-# ============================================================
+# config.py
+"""
+Constantes du moteur. Les valeurs utilisateur sont stockées dans
+config_local.json (ConfigStore) et écrasées à chaud au démarrage.
+"""
 
 OBS_HOST = "localhost"
 OBS_PORT = 4455
+OBS_PASSWORD = ""
 
-# Mot de passe OBS WebSocket
-# OBS Studio > Outils > Paramètres du serveur WebSocket
-OBS_PASSWORD = "valorant123"
-
-
-# ============================================================
-# COMPORTEMENT
-# ============================================================
-
-# Intervalle entre deux vérifications de l'état de la partie
-# (via l'API locale du client Riot), en secondes.
 POLL_INTERVAL = 2
-
-# Affiche des infos détaillées sur ce que renvoie l'API Riot
-# (utile pour diagnostiquer). Remets à True si besoin de déboguer.
 DEBUG = False
 
-
-# ============================================================
-# OPTIONS AVANCEES OBS
-# ============================================================
-
-# Nombre maximum de tentatives de connexion OBS
 OBS_MAX_RETRY = 5
-
-# Temps entre chaque tentative OBS (secondes)
 OBS_RETRY_DELAY = 2
+OBS_LAUNCH_TIMEOUT_S = 45
+OBS_LAUNCH_POLL_S = 0.75
+
+VALORANT_PROCESS_NAMES = ("valorant.exe", "valorant-win64-shipping.exe")
+RIOT_PROCESS_NAMES = ("riotclient.exe", "riotclientservices.exe")
+
+# Dossier de sortie par défaut si OBS ne peut pas être interrogé.
+DEFAULT_OBS_FOLDER = "~"
+
+# Token d'identification de match généré localement quand l'API Riot ne
+# fournit pas d'identifiant. Préfixe 'local-' pour le distinguer d'un
+# matchId Riot.
+LOCAL_MATCH_PREFIX = "local-"

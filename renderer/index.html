@@ -7,12 +7,11 @@
   <title>Valorant Auto Record</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app-shell">
-    <!-- ===================== SIDEBAR ===================== -->
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">V</div>
@@ -23,35 +22,34 @@
       </div>
 
       <nav class="nav">
-        <button class="nav-item active" data-view="dashboard">
-          <span class="nav-ico">▦</span> Tableau de bord
+        <button class="nav-item active" data-view="home">
+          <span class="nav-ico">●</span> Accueil
         </button>
-        <button class="nav-item" data-view="history">
-          <span class="nav-ico">≣</span> Historique
-        </button>
-        <button class="nav-item" data-view="logs">
-          <span class="nav-ico">❯_</span> Logs
+        <button class="nav-item" data-view="matches">
+          <span class="nav-ico">▣</span> Parties
         </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-ico">⚙</span> Paramètres
+        </button>
+        <button class="nav-item" data-view="diagnostics">
+          <span class="nav-ico">≡</span> Diagnostics
         </button>
       </nav>
 
       <div class="sidebar-footer">
         <div class="backend-pill" id="backendPill">
           <span class="dot"></span>
-          <span id="backendState">Backend…</span>
+          <span id="backendState">Connexion…</span>
         </div>
         <span class="version" id="appVersion">v—</span>
       </div>
     </aside>
 
-    <!-- ===================== MAIN ===================== -->
     <main class="main">
       <header class="topbar">
         <div class="topbar-left">
-          <h1 id="viewTitle">Tableau de bord</h1>
-          <span class="topbar-sub" id="viewSub">Surveillance en temps réel</span>
+          <h1 id="viewTitle">Accueil</h1>
+          <span class="topbar-sub" id="viewSub">Surveillance automatique</span>
         </div>
         <div class="topbar-right">
           <div class="global-status" id="globalStatus">
@@ -61,142 +59,140 @@
         </div>
       </header>
 
-      <!-- ============ DASHBOARD ============ -->
-      <section class="view active" id="view-dashboard">
+      <!-- ============ ACCUEIL ============ -->
+      <section class="view active" id="view-home">
         <div class="hero-banner" id="heroBanner">
           <div class="hero-left">
-            <span class="hero-label">SYSTÈME</span>
+            <span class="hero-label">STATUT</span>
             <span class="hero-state" id="heroState">EN ATTENTE</span>
+            <span class="hero-sub" id="heroSub">Le logiciel surveille automatiquement vos parties.</span>
           </div>
           <div class="hero-right">
             <div class="hero-metric">
               <span class="hm-label">DURÉE</span>
               <span class="hm-value" id="heroDuration">00:00</span>
             </div>
-            <div class="hero-metric">
-              <span class="hm-label">FICHIER</span>
-              <span class="hm-value" id="heroFile" title="">—</span>
-            </div>
           </div>
         </div>
 
         <div class="status-grid">
-          <!-- OBS -->
-          <div class="status-card" id="card-obs">
-            <div class="sc-head">
-              <span class="sc-tag">OBS</span>
-              <span class="sc-dot"></span>
-            </div>
-            <div class="sc-state" id="obsState">Indisponible</div>
-            <div class="sc-detail" id="obsDetail">Non détecté</div>
-            <div class="sc-detail" id="obsScene">Scène : —</div>
-          </div>
-          <!-- VALORANT -->
           <div class="status-card" id="card-valorant">
             <div class="sc-head">
-              <span class="sc-tag">VALORANT</span>
+              <span class="sc-title">VALORANT</span>
               <span class="sc-dot"></span>
             </div>
             <div class="sc-state" id="valorantState">Indisponible</div>
             <div class="sc-detail" id="valorantDetail">Processus non détecté</div>
           </div>
-          <!-- RIOT -->
-          <div class="status-card" id="card-riot">
+          <div class="status-card" id="card-obs">
             <div class="sc-head">
-              <span class="sc-tag">RIOT</span>
+              <span class="sc-title">OBS</span>
               <span class="sc-dot"></span>
             </div>
-            <div class="sc-state" id="riotState">Indisponible</div>
-            <div class="sc-detail" id="riotDetail">Client non détecté</div>
+            <div class="sc-state" id="obsState">Indisponible</div>
+            <div class="sc-detail" id="obsDetail">Non détecté</div>
           </div>
-          <!-- PARTIE -->
-          <div class="status-card" id="card-match">
-            <div class="sc-head">
-              <span class="sc-tag">PARTIE</span>
-              <span class="sc-dot"></span>
-            </div>
-            <div class="sc-state" id="matchState">Indisponible</div>
-            <div class="sc-detail" id="matchDetail">Carte : — | Agent : —</div>
-            <div class="sc-detail" id="matchScore">Score : —</div>
-          </div>
-          <!-- REC -->
           <div class="status-card" id="card-rec">
             <div class="sc-head">
-              <span class="sc-tag">REC</span>
+              <span class="sc-title">ENREGISTREMENT</span>
               <span class="sc-dot"></span>
             </div>
-            <div class="sc-state" id="recState">Arrêté</div>
-            <div class="sc-detail" id="recDetail">Durée : 00:00</div>
+            <div class="sc-state" id="recState">En attente</div>
+            <div class="sc-detail" id="recDetail">Aucune partie en cours</div>
+          </div>
+          <div class="status-card" id="card-auto">
+            <div class="sc-head">
+              <span class="sc-title">AUTOMATIQUE</span>
+              <span class="sc-dot"></span>
+            </div>
+            <div class="sc-state" id="autoState">Activé</div>
+            <div class="sc-detail" id="autoDetail">Démarre et arrête tout seul</div>
           </div>
         </div>
 
-        <div class="controls">
-          <button class="btn btn-primary" id="btnToggleMonitor">Démarrer la surveillance</button>
-          <button class="btn btn-ghost" id="btnAutoRecord">Auto : ON</button>
+        <div class="controls" id="homeControls">
+          <button class="btn btn-primary" id="btnToggleMonitor">Activer la surveillance</button>
+          <button class="btn btn-ghost" id="btnAutoRecord">Automatique : ON</button>
           <div class="control-divider"></div>
-          <button class="btn btn-record" id="btnStartRecord">▶ Démarrer</button>
-          <button class="btn btn-stop" id="btnStopRecord">■ Arrêter</button>
-          <div class="control-divider"></div>
-          <button class="btn btn-ghost" id="btnReconnectObs">Reconnecter OBS</button>
-          <button class="btn btn-ghost" id="btnLaunchObs">Lancer OBS</button>
-          <button class="btn btn-warn" id="btnRestartBackend">Relancer le backend</button>
+          <button class="btn btn-ghost" id="btnOpenFolder">Ouvrir le dossier des vidéos</button>
+          <button class="btn btn-warn" id="btnRestartBackend">Redémarrer</button>
         </div>
 
         <div class="last-error" id="lastErrorBox" hidden>
-          <span class="le-tag">ERREUR</span>
+          <span class="le-tag">INFO</span>
           <span class="le-text" id="lastErrorText"></span>
         </div>
       </section>
 
-      <!-- ============ HISTORY ============ -->
-      <section class="view" id="view-history">
-        <div class="toolbar">
+      <!-- ============ PARTIES ============ -->
+      <section class="view" id="view-matches">
+        <div class="toolbar matches-toolbar">
+          <input type="search" id="matchSearch" placeholder="Rechercher : carte, agent, mode…" class="input-search" />
+          <select id="matchFilterResult" class="input-select">
+            <option value="ALL">Tous les résultats</option>
+            <option value="Victoire">Victoires</option>
+            <option value="Defaite">Défaites</option>
+            <option value="Inconnu">Indéterminés</option>
+          </select>
+          <select id="matchSort" class="input-select">
+            <option value="date_desc">Plus récent</option>
+            <option value="date_asc">Plus ancien</option>
+            <option value="duration_desc">Plus long</option>
+            <option value="map_asc">Carte (A→Z)</option>
+          </select>
           <button class="btn btn-ghost" id="btnRefreshHistory">↻ Actualiser</button>
-          <button class="btn btn-ghost" id="btnOpenRecordings">Ouvrir le dossier</button>
+          <button class="btn btn-ghost" id="btnOpenRecordings">Dossier</button>
         </div>
-        <div class="history-list" id="historyList">
+        <div class="history-grid" id="historyList">
           <div class="empty-state">Aucun match enregistré pour le moment.</div>
         </div>
       </section>
 
-      <!-- ============ LOGS ============ -->
-      <section class="view" id="view-logs">
-        <div class="toolbar">
-          <div class="log-filters" id="logFilters">
-            <button class="chip active" data-level="ALL">Tous</button>
-            <button class="chip" data-level="INFO">INFO</button>
-            <button class="chip" data-level="SUCCESS">SUCCESS</button>
-            <button class="chip" data-level="WARNING">WARN</button>
-            <button class="chip" data-level="ERROR">ERROR</button>
-            <button class="chip" data-level="DEBUG">DEBUG</button>
-          </div>
-          <button class="btn btn-ghost" id="btnClearLogs">Vider</button>
-        </div>
-        <div class="log-view" id="logView"></div>
-      </section>
-
-      <!-- ============ SETTINGS ============ -->
+      <!-- ============ PARAMÈTRES ============ -->
       <section class="view" id="view-settings">
         <form id="settingsForm" class="settings-form" autocomplete="off">
           <div class="settings-group">
-            <h2 class="group-title">Enregistrement</h2>
+            <h2 class="group-title">Général</h2>
+            <div class="field field-toggle">
+              <label for="setAutoRecord">Enregistrement automatique</label>
+              <label class="switch">
+                <input type="checkbox" id="setAutoRecord" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-toggle">
+              <label for="setAutoLaunchObs">Lancer OBS automatiquement</label>
+              <label class="switch">
+                <input type="checkbox" id="setAutoLaunchObs" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-toggle">
+              <label for="setStartWithWindows">Démarrer avec Windows</label>
+              <label class="switch">
+                <input type="checkbox" id="setStartWithWindows" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-toggle">
+              <label for="setMinimizeToTray">Réduire dans la zone de notification à la fermeture</label>
+              <label class="switch">
+                <input type="checkbox" id="setMinimizeToTray" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
 
+          <div class="settings-group">
+            <h2 class="group-title">Enregistrements</h2>
             <div class="field">
-              <label for="setObsFolder">Dossier de sauvegarde des vidéos</label>
+              <label for="setObsFolder">Dossier des vidéos (détecté depuis OBS)</label>
               <div class="field-row">
                 <input type="text" id="setObsFolder" />
-                <button type="button" class="btn btn-ghost btn-sm" data-pick="folder">Parcourir</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-pick="folder">Choisir</button>
               </div>
+              <span class="field-hint" id="setObsFolderHint">—</span>
             </div>
-
-            <div class="field">
-              <label for="setObsExe">Exécutable OBS (obs64.exe)</label>
-              <div class="field-row">
-                <input type="text" id="setObsExe" />
-                <button type="button" class="btn btn-ghost btn-sm" data-pick="exe">Parcourir</button>
-              </div>
-            </div>
-
             <div class="field-grid">
               <div class="field">
                 <label for="setRecordFormat">Format d'enregistrement</label>
@@ -209,44 +205,46 @@
                 <label for="setMaxSize">Nettoyage auto (Go, 0 = illimité)</label>
                 <input type="number" id="setMaxSize" min="0" max="2000" step="1" />
               </div>
-              <div class="field">
-                <label for="setMaxDuration">Durée max (min, 0 = illimité)</label>
-                <input type="number" id="setMaxDuration" min="0" max="6000" step="1" />
-              </div>
-              <div class="field">
-                <label for="setFileNaming">Nommage des fichiers</label>
-                <input type="text" id="setFileNaming" />
-              </div>
             </div>
-
-            <div class="field field-toggle">
-              <label for="setAutoRecord">Enregistrement automatique</label>
-              <label class="switch">
-                <input type="checkbox" id="setAutoRecord" />
-                <span class="slider"></span>
-              </label>
+            <div class="field">
+              <label for="setFileNaming">Modèle de nom de fichier</label>
+              <input type="text" id="setFileNaming" />
+              <span class="field-hint">Variables : {date} {map} {agent} {score} {result}</span>
             </div>
           </div>
 
           <div class="settings-group">
-            <h2 class="group-title">OBS WebSocket</h2>
+            <h2 class="group-title">OBS</h2>
+            <div class="field">
+              <label>Installation détectée</label>
+              <div class="field-row">
+                <select id="setObsExe" class="input-select" style="flex:1"></select>
+                <button type="button" class="btn btn-ghost btn-sm" id="btnScanObs">Rechercher</button>
+              </div>
+              <span class="field-hint" id="setObsExeHint">—</span>
+            </div>
             <div class="field-grid">
               <div class="field">
-                <label for="setObsHost">Adresse</label>
+                <label for="setObsHost">Adresse WebSocket</label>
                 <input type="text" id="setObsHost" />
               </div>
               <div class="field">
-                <label for="setObsPort">Port</label>
-                <input type="number" id="setObsPort" />
+                <label for="setObsPort">Port WebSocket</label>
+                <input type="number" id="setObsPort" min="1" max="65535" />
               </div>
               <div class="field field-span2">
-                <label for="setObsPassword">Mot de passe</label>
-                <input type="password" id="setObsPassword" />
+                <label for="setObsPassword">Mot de passe WebSocket</label>
+                <input type="password" id="setObsPassword" placeholder="Laisser vide pour OBS sans mot de passe" />
               </div>
+            </div>
+            <div class="field-row">
+              <button type="button" class="btn btn-ghost" id="btnTestObs">Tester la connexion</button>
+              <button type="button" class="btn btn-ghost" id="btnReconnectObs">Reconnecter</button>
+              <button type="button" class="btn btn-ghost" id="btnLaunchObs">Lancer OBS</button>
             </div>
           </div>
 
-          <div class="settings-group">
+          <div class="settings-group" id="advancedGroup" hidden>
             <h2 class="group-title">Avancé</h2>
             <div class="field-grid">
               <div class="field">
@@ -266,15 +264,51 @@
           </div>
 
           <div class="settings-actions">
+            <button type="button" class="btn btn-ghost" id="btnToggleAdvanced">Afficher les options avancées</button>
             <button type="button" class="btn btn-ghost" id="btnResetSettings">Réinitialiser</button>
-            <button type="submit" class="btn btn-primary">Enregistrer les paramètres</button>
+            <button type="submit" class="btn btn-primary">Enregistrer</button>
           </div>
         </form>
+      </section>
+
+      <!-- ============ DIAGNOSTICS ============ -->
+      <section class="view" id="view-diagnostics">
+        <div class="toolbar">
+          <button class="btn btn-ghost" id="btnRefreshDiag">↻ Actualiser</button>
+          <button class="btn btn-ghost" id="btnOpenLogDir">Ouvrir le dossier des logs</button>
+          <button class="btn btn-warn" id="btnClearLogs">Vider l'affichage</button>
+        </div>
+        <div class="log-filters" id="logFilters">
+          <button class="chip active" data-level="ALL">Tous</button>
+          <button class="chip" data-level="INFO">INFO</button>
+          <button class="chip" data-level="SUCCESS">OK</button>
+          <button class="chip" data-level="WARNING">ATTENTION</button>
+          <button class="chip" data-level="ERROR">ERREUR</button>
+          <button class="chip" data-level="DEBUG">DEBUG</button>
+        </div>
+        <div class="diag-grid">
+          <div class="diag-card">
+            <h3>Système</h3>
+            <div class="kv"><span>Backend</span><b id="diagBackend">—</b></div>
+            <div class="kv"><span>Surveillance</span><b id="diagMonitor">—</b></div>
+            <div class="kv"><span>Automatique</span><b id="diagAuto">—</b></div>
+            <div class="kv"><span>Base SQLite</span><b id="diagDb">—</b></div>
+            <div class="kv"><span>Logs</span><b id="diagLog">—</b></div>
+          </div>
+          <div class="diag-card">
+            <h3>OBS</h3>
+            <div class="kv"><span>Processus</span><b id="diagObsRun">—</b></div>
+            <div class="kv"><span>WebSocket</span><b id="diagObsConn">—</b></div>
+            <div class="kv"><span>Version OBS</span><b id="diagObsVer">—</b></div>
+            <div class="kv"><span>Version WebSocket</span><b id="diagObsWs">—</b></div>
+            <div class="kv"><span>Dossier de sortie</span><b id="diagObsDir">—</b></div>
+          </div>
+        </div>
+        <div class="log-view" id="logView"></div>
       </section>
     </main>
   </div>
 
-  <!-- Toast container -->
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="renderer.js"></script>

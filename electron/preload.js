@@ -14,7 +14,8 @@ contextBridge.exposeInMainWorld('api', {
   openDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
   openFile: (filters) => ipcRenderer.invoke('dialog:openFile', { filters }),
 
-  // Ouvre un chemin dans l'explorateur.
+  // Ouvre un chemin dans l'explorateur (ou un fichier).
+  // Renvoie { ok, error } pour permettre à l'UI de signaler un échec.
   openPath: (p) => ipcRenderer.invoke('shell:openPath', p),
 
   // Relance le backend Python.
@@ -22,6 +23,15 @@ contextBridge.exposeInMainWorld('api', {
 
   // Version de l'app.
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+
+  // Démarrage avec Windows.
+  setAutoLaunch: (enabled) => ipcRenderer.invoke('app:setAutoLaunch', { enabled }),
+  getAutoLaunch: () => ipcRenderer.invoke('app:getAutoLaunch'),
+
+  // Contrôles fenêtre.
+  showWindow: () => ipcRenderer.invoke('app:showWindow'),
+  hideWindow: () => ipcRenderer.invoke('app:hideWindow'),
+  quit: () => ipcRenderer.invoke('app:quit'),
 
   // Abonnements aux événements temps réel envoyés par le backend.
   on: (channel, cb) => {
