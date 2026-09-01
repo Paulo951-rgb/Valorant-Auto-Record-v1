@@ -21,6 +21,7 @@ import threading
 import traceback
 import uuid
 from datetime import datetime
+from typing import Any, Dict
 
 # --- Redirection de stdout AVANT tout print -------------------------------
 _ORIGINAL_STDOUT = sys.stdout
@@ -77,6 +78,8 @@ DEFAULT_CONFIG = {
 }
 
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "SUCCESS": 20, "WARNING": 30, "ERROR": 40}
+
+APP_VERSION = "2.0.0"
 
 
 # =========================================================================
@@ -258,6 +261,10 @@ def cmd_ping(params):
     return {"pong": True, "time": datetime.now().isoformat()}
 
 
+def cmd_get_version(params):
+    return {"version": APP_VERSION}
+
+
 def cmd_get_status(params):
     return monitor.snapshot()
 
@@ -416,12 +423,19 @@ def cmd_quit(params):
     """Demande au processus Python de se terminer proprement (utilisé
     par Electron pour before-quit)."""
     import threading as _t
-    _t.Timer(0.05, lambda: os._exit(0)).start()
+    def _shutdown():
+        time.sleep(0.2)
+        if monitor.running:
+            monitor.stop()
+        time.sleep(0.3)
+        os._exit(0)
+    _t.Timer(0.05, _shutdown).start()
     return {"quit": True}
 
 
 HANDLERS = {
     "ping": cmd_ping,
+    "get_version": cmd_get_version,
     "get_status": cmd_get_status,
     "get_config": cmd_get_config,
     "save_config": cmd_save_config,
@@ -498,7 +512,7 @@ def _handle_request(line):
 
 def _stdin_loop():
     logger.info("Backend Python démarré.")
-    _send_notification("ready", {"version": "2.0.0", "time": datetime.now().isoformat()})
+    _send_notification("ready", {"version": APP_VERSION, "time": datetime.now().isoformat()})
     try:
         _send_notification("status", monitor.snapshot())
     except Exception as e:

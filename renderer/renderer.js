@@ -310,7 +310,7 @@ function renderMatches() {
 
 function buildMatchCard(m) {
   const result = m.result || 'Inconnu';
-  const cls = (result || 'inconnu').toLowerCase();
+  const cls = result.toLowerCase().replace(/\s+/g, '-');
   const card = document.createElement('div');
   card.className = 'match-card ' + cls;
   const score = m.score || `${m.ally_score ?? 0}-${m.enemy_score ?? 0}`;
@@ -340,9 +340,10 @@ function buildMatchCard(m) {
   const openBtn = card.querySelector('[data-act="open"]');
   const delBtn = card.querySelector('[data-act="del"]');
   if (openBtn) {
-    openBtn.addEventListener('click', () => {
-      if (m.video_path) api.openPath(m.video_path);
-      else toast('Vidéo introuvable.', 'warn');
+    openBtn.addEventListener('click', async () => {
+      if (!m.video_path) { toast('Vidéo introuvable.', 'warn'); return; }
+      const res = await api.openPath(m.video_path);
+      if (res && res.ok === false) toast('Impossible d\'ouvrir le fichier : ' + (res.error || ''), 'err');
     });
   }
   if (delBtn) {
@@ -377,8 +378,9 @@ $('#btnRefreshHistory').addEventListener('click', loadHistory);
 $('#btnOpenRecordings').addEventListener('click', async () => {
   const cfg = state.config || ((await api.call('get_config')).data);
   const folder = cfg && cfg.obs_folder;
-  if (folder) api.openPath(folder);
-  else toast('Aucun dossier configuré.', 'warn');
+  if (!folder) { toast('Aucun dossier configuré.', 'warn'); return; }
+  const res = await api.openPath(folder);
+  if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
 });
 
 /* ============================================================
@@ -476,14 +478,14 @@ $('#settingsForm').addEventListener('submit', async (e) => {
     const sel = $('#setObsExe');
     if (sel) cfg.obs_exe_path = sel.value;
     cfg.show_advanced = state.showAdvanced;
-    const res = await api.call('save_config', cfg);
-    if (res && res.ok) {
-      toast('Paramètres enregistrés.', 'ok');
-      state.config = res.data;
-      if (cfg.auto_record !== undefined) api.call('set_auto_record', { enabled: cfg.auto_record });
-      if (cfg.start_with_windows !== undefined) {
-        api.call('app:setAutoLaunch', { enabled: !!cfg.start_with_windows });
-      }
+      const res = await api.call('save_config', cfg);
+      if (res && res.ok) {
+        toast('Paramètres enregistrés.', 'ok');
+        state.config = res.data;
+        if (cfg.auto_record !== undefined) api.call('set_auto_record', { enabled: cfg.auto_record });
+        if (cfg.start_with_windows !== undefined) {
+          api.setAutoLaunch(!!cfg.start_with_windows);
+        }
     } else {
       toast('Échec : ' + (res ? res.error : 'erreur'), 'err');
     }
@@ -650,7 +652,7 @@ api.on('backend:config_changed', (data) => {
     }
   }
   if (data.start_with_windows !== undefined) {
-    api.call('app:setAutoLaunch', { enabled: !!data.start_with_windows }).catch(() => {});
+    api.setAutoLaunch(!!data.start_with_windows);
   }
 });
 api.on('backend:match_started', (data) => {

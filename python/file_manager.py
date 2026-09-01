@@ -47,16 +47,16 @@ def get_latest_file(directory, extensions=_OBS_EXTENSIONS, since_ts: float = 0.0
             continue
     if exclude:
         try:
-            ex_abs = os.path.abspath(exclude)
+            ex_abs = os.path.normcase(os.path.abspath(exclude))
         except (OSError, ValueError):
-            ex_abs = exclude
-        candidates = [c for c in candidates if os.path.abspath(c) != ex_abs]
+            ex_abs = os.path.normcase(exclude)
+        candidates = [c for c in candidates if os.path.normcase(os.path.abspath(c)) != ex_abs]
     if since_ts > 0:
-        candidates = [c for c in candidates if _safe_getctime(c) >= since_ts - 5]
+        candidates = [c for c in candidates if _safe_getmtime(c) >= since_ts - 5]
     if not candidates:
         return None
     try:
-        return max(candidates, key=_safe_getctime)
+        return max(candidates, key=_safe_getmtime)
     except (OSError, ValueError):
         return None
 
@@ -64,6 +64,13 @@ def get_latest_file(directory, extensions=_OBS_EXTENSIONS, since_ts: float = 0.0
 def _safe_getctime(path: str) -> float:
     try:
         return os.path.getctime(path)
+    except OSError:
+        return 0.0
+
+
+def _safe_getmtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
     except OSError:
         return 0.0
 
@@ -212,7 +219,7 @@ def clean_old_recordings(directory, max_size_gb, protected_paths: Optional[list]
         files = [f for f in files if os.path.abspath(f) not in prot_abs]
     if not files:
         return
-    files.sort(key=os.path.getmtime)
+    files.sort(key=lambda f: _safe_getmtime(f))
     total_size = sum(_file_size(f) for f in files)
     if total_size <= max_size_bytes:
         return

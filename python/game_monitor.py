@@ -391,9 +391,11 @@ class GameMonitor:
                 current_match["mode"] = session.mode
 
         # Calcul du résultat
-        if current_match["ally_score"] > current_match["enemy_score"]:
+        ally = current_match.get("ally_score") or 0
+        enemy = current_match.get("enemy_score") or 0
+        if ally > enemy:
             result = "Victoire"
-        elif current_match["ally_score"] < current_match["enemy_score"]:
+        elif ally < enemy:
             result = "Defaite"
         else:
             result = "Inconnu"
@@ -444,20 +446,21 @@ class GameMonitor:
         date_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # Insertion en base
-        if current_match["match_id"]:
+        match_id = current_match.get("match_id")
+        if match_id:
             try:
                 self._repo.upsert_match({
-                    "match_id": current_match["match_id"],
+                    "match_id": match_id,
                     "date": date_iso,
-                    "map_name": current_match["map"],
-                    "agent": current_match["agent"],
-                    "score": current_match["score"],
-                    "ally_score": current_match["ally_score"],
-                    "enemy_score": current_match["enemy_score"],
+                    "map_name": current_match.get("map"),
+                    "agent": current_match.get("agent"),
+                    "score": current_match.get("score"),
+                    "ally_score": ally,
+                    "enemy_score": enemy,
                     "result": result,
                     "mode": current_match.get("mode"),
                     "queue_id": current_match.get("queue_id"),
-                    "duration_seconds": current_match["duration_s"],
+                    "duration_seconds": current_match.get("duration_s", 0),
                     "video_path": video_path,
                     "file_size_bytes": file_size,
                     "status": "completed" if video_path else "failed",
@@ -504,7 +507,7 @@ class GameMonitor:
 
     def _make_local_match_id(self, session=None) -> str:
         if session is not None and session.queue_id and session.map not in (None, "Inconnu", ""):
-            return f"{config.LOCAL_MATCH_PREFIX}{int(time.time())}_{session.queue_id}"
+            return f"{config.LOCAL_MATCH_PREFIX}{int(time.time())}_{session.queue_id}_{uuid.uuid4().hex[:6]}"
         return f"{config.LOCAL_MATCH_PREFIX}{uuid.uuid4().hex[:12]}"
 
     # ---------- status ----------
