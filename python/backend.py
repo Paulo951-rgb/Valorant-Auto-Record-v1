@@ -4,13 +4,13 @@
 Backend Python pour l'application Electron "Valorant Auto Record".
 
 Communication : protocole JSON-lines sur stdin/stdout.
- - Une requête par ligne (entrée stdin)  : {"id": "...", "method": "...", "params": {...}}
- - Une réponse   par ligne (sortie stdout): {"id": "...", "result": ..., "error": null}
- - Des notifications asynchrones           : {"event": "...", "data": {...}}
+  * Requête  (entrée)  : {"id": "...", "method": "...", "params": {...}}
+  * Réponse (sortie)   : {"id": "...", "result": ..., "error": null}
+  * Notification        : {"event": "...", "data": {...}}
 
-Ce module CONSERVE intégralement la logique existante du projet
-(config, obs_controller, valorant_api, database, file_manager, logger).
-Il se contente de l'orchestrer et de l'exposer à l'interface Electron.
+Ce module CONSERVE intégralement la logique métier d'origine (OBS,
+Valorant, SQLite, fichiers). Il orchestre les services et expose une
+IPC riche à l'interface Electron.
 """
 import os
 import sys
@@ -19,22 +19,22 @@ import re
 import time
 import threading
 import traceback
+import uuid
 from datetime import datetime
 
 # --- Redirection de stdout AVANT tout print -------------------------------
-# Le protocole JSON utilise stdout exclusivement. Toute sortie "normale"
-# (print, tracebacks, avertissements) est redirigée vers stderr pour ne pas
-# corrompre le protocole. Les réponses JSON s'écrivent sur le flux d'origine.
 _ORIGINAL_STDOUT = sys.stdout
 sys.stdout = sys.stderr
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-os.chdir(_HERE)  # DB + config_local.json résolus relativement au script.
+os.chdir(_HERE)
 
-# --- Imports de la logique existante (inchangée) --------------------------
+# --- Imports métier --------------------------------------------------------
 import config
-import database
 import logger
+import database
+import file_manager
+import match_repository
 from obs_controller import (
     is_obs_running,
     launch_obs,
@@ -43,11 +43,14 @@ from obs_controller import (
     stop_record,
     is_recording,
     get_obs_status,
+    get_recording_path,
+    configure as configure_obs,
+    discover_installations as discover_obs,
 )
 from valorant_api import get_current_state, RiotClientNotRunning
-from monitor import Monitor, is_valorant_running, riot_connected_value
+from game_monitor import GameMonitor
 
-# --- Fichiers de configuration / logs ------------------------------------
+# --- Fichiers ---------------------------------------------------------------
 CONFIG_FILE = os.path.join(_HERE, "config_local.json")
 LOG_DIR = os.path.abspath(os.path.join(_HERE, "..", "logs"))
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -66,6 +69,11 @@ DEFAULT_CONFIG = {
     "max_duration_minutes": 60,
     "record_format": "mp4",
     "file_naming": "Valorant_{date}_{map}_{agent}_{score}_{result}",
+    "start_with_windows": False,
+    "minimize_to_tray": True,
+    "show_advanced": False,
+    "auto_launch_obs": True,
+    "history_keep": True,
 }
 
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "SUCCESS": 20, "WARNING": 30, "ERROR": 40}
@@ -75,8 +83,6 @@ LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "SUCCESS": 20, "WARNING": 30, "ERROR": 40
 # CONFIGURATION
 # =========================================================================
 class ConfigStore:
-    """Gère config_local.json et applique les valeurs au module `config`."""
-
     def __init__(self):
         self._lock = threading.Lock()
         self._cfg = dict(DEFAULT_CONFIG)
@@ -89,7 +95,9 @@ class ConfigStore:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         saved = json.load(f)
                     if isinstance(saved, dict):
-                        self._cfg.update(saved)
+                        for k, v in saved.items():
+                            if k in self._cfg:
+                                self._cfg[k] = v
                 except Exception as e:
                     _log_to_file(f"Erreur lecture config : {e}")
             self._apply_to_module()
@@ -98,7 +106,8 @@ class ConfigStore:
         with self._lock:
             if isinstance(new_values, dict):
                 for k, v in new_values.items():
-                    self._cfg[k] = v
+                    if k in self._cfg:
+                        self._cfg[k] = v
             try:
                 with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(self._cfg, f, indent=2)
@@ -111,8 +120,13 @@ class ConfigStore:
         with self._lock:
             return dict(self._cfg)
 
+    def reset(self):
+        with self._lock:
+            self._cfg = dict(DEFAULT_CONFIG)
+            self._apply_to_module()
+        return dict(self._cfg)
+
     def _apply_to_module(self):
-        # Les modules existants lisent ces attributs au moment de l'appel.
         config.OBS_HOST = self._cfg.get("obs_host", getattr(config, "OBS_HOST", "localhost"))
         try:
             config.OBS_PORT = int(self._cfg.get("obs_port", getattr(config, "OBS_PORT", 4455)))
@@ -129,13 +143,19 @@ class ConfigStore:
             )
         except Exception:
             pass
+        # Synchronise OBS
+        try:
+            configure_obs(host=config.OBS_HOST, port=config.OBS_PORT,
+                           password=config.OBS_PASSWORD)
+        except Exception:
+            pass
 
 
 store = ConfigStore()
 
 
 # =========================================================================
-# JOURNALISATION (fichier + redirection vers Electron)
+# JOURNALISATION
 # =========================================================================
 _file_log_lock = threading.Lock()
 _log_file_handle = None
@@ -169,10 +189,7 @@ def _level_allowed(level):
 
 
 def _on_log(formatted_msg):
-    """ui_callback branché sur logger.py : transmet les logs à Electron."""
-    # formatted_msg = "[HH:MM:SS] [LEVEL] message"
     _log_to_file(formatted_msg)
-    # Parsing robuste : le format est fixe "[time] [LEVEL] message".
     try:
         m = re.match(r"^\[(?P<time>[^\]]+)\]\s*\[(?P<level>[^\]]+)\]\s*(?P<msg>.*)$",
                      formatted_msg, re.DOTALL)
@@ -193,7 +210,6 @@ def _on_log(formatted_msg):
     })
 
 
-# Branchement du callback de logging existant (même mécanisme que main.py).
 logger.ui_callback = _on_log
 
 
@@ -204,7 +220,6 @@ _send_lock = threading.Lock()
 
 
 def _send(obj):
-    """Écrit un objet JSON sur le flux stdout d'origine (atomique par ligne)."""
     try:
         line = json.dumps(obj, ensure_ascii=False, default=str)
         with _send_lock:
@@ -223,19 +238,26 @@ def _send_notification(event, data):
 
 
 def _emit_event(name, data):
-    """Callback utilisé par le Monitor pour notifier Electron."""
     _send_notification(name, data)
 
 
 # =========================================================================
 # MONITOR
 # =========================================================================
-monitor = Monitor(get_runtime_config=store.get, emit_event=_emit_event)
+repository = match_repository.MatchRepository()
+repository.init()
+monitor = GameMonitor(get_runtime_config=store.get,
+                      emit_event=_emit_event,
+                      repository=repository)
 
 
 # =========================================================================
-# DISPATCH DES COMMANDES
+# COMMANDES
 # =========================================================================
+def cmd_ping(params):
+    return {"pong": True, "time": datetime.now().isoformat()}
+
+
 def cmd_get_status(params):
     return monitor.snapshot()
 
@@ -247,6 +269,13 @@ def cmd_get_config(params):
 def cmd_save_config(params):
     saved = store.save(params or {})
     logger.success("Configuration enregistrée.")
+    _send_notification("config_changed", saved)
+    return saved
+
+
+def cmd_reset_config(params):
+    saved = store.reset()
+    logger.success("Configuration réinitialisée.")
     _send_notification("config_changed", saved)
     return saved
 
@@ -283,33 +312,54 @@ def cmd_test_obs(params):
 
 
 def cmd_reconnect_obs(params):
-    # Force une reconnexion (réinitialise le client mis en cache).
     import obs_controller as oc
-    oc._client = None
-    oc.recording = False
-    ok = test_obs_connection()
-    return {"connected": ok, "running": is_obs_running()}
+    oc._service._client = None
+    oc._recording_local["value"] = False
+    return {"connected": test_obs_connection(), "running": is_obs_running()}
 
 
 def cmd_launch_obs(params):
     ok = launch_obs()
-    return {"launched": ok, "running": is_obs_running()}
+    return {"launched": ok, "running": is_obs_running(),
+            "recording_path": get_recording_path()}
+
+
+def cmd_discover_obs(params):
+    installations = discover_obs()
+    return {
+        "installations": [
+            {"path": i.path, "version": i.version, "running": i.running}
+            for i in installations
+        ],
+        "count": len(installations),
+    }
+
+
+def cmd_get_recording_path(params):
+    return {"output_dir": get_recording_path()}
 
 
 def cmd_get_history(params):
-    database.init_db()
-    rows = database.get_all_matches()
-    return [
-        {
-            "id": r[0], "date": r[1], "map": r[2], "agent": r[3],
-            "score": r[4], "result": r[5], "path": r[6],
-        }
-        for r in rows
-    ]
+    return repository.get_all()
+
+
+def cmd_delete_match(params):
+    match_id = (params or {}).get("match_id")
+    if not match_id:
+        return {"deleted": False, "error": "match_id manquant"}
+    return {"deleted": repository.delete(match_id)}
+
+
+def cmd_update_match(params):
+    match_id = (params or {}).get("match_id")
+    if not match_id:
+        return {"updated": False, "error": "match_id manquant"}
+    data = {k: v for k, v in (params or {}).items() if k != "match_id"}
+    repository.upsert_match({"match_id": match_id, **data})
+    return {"updated": True}
 
 
 def cmd_get_valo_state(params):
-    """Récupère l'état Riot à la demande (debug / tableau de bord)."""
     try:
         return {"ok": True, "data": get_current_state(debug=config.DEBUG)}
     except RiotClientNotRunning:
@@ -318,8 +368,28 @@ def cmd_get_valo_state(params):
         return {"ok": False, "error": str(e)}
 
 
-def cmd_ping(params):
-    return {"pong": True, "time": datetime.now().isoformat()}
+def cmd_app_diagnostics(params):
+    """Page de diagnostic destinée aux utilisateurs avancés."""
+    cfg = store.get()
+    installations = discover_obs()
+    try:
+        rec_path = get_recording_path()
+    except Exception:
+        rec_path = None
+    db_path = os.path.abspath(repository._db_path)
+    log_path = LOG_FILE
+    return {
+        "config": cfg,
+        "obs_installations": [
+            {"path": i.path, "version": i.version, "running": i.running}
+            for i in installations
+        ],
+        "obs_status": get_obs_status(),
+        "recording_path": rec_path,
+        "db_path": db_path,
+        "log_path": log_path,
+        "session_state": get_current_state(debug=config.DEBUG) if cfg.get("log_level") == "DEBUG" else None,
+    }
 
 
 HANDLERS = {
@@ -327,6 +397,7 @@ HANDLERS = {
     "get_status": cmd_get_status,
     "get_config": cmd_get_config,
     "save_config": cmd_save_config,
+    "reset_config": cmd_reset_config,
     "start_monitoring": cmd_start_monitoring,
     "stop_monitoring": cmd_stop_monitoring,
     "set_auto_record": cmd_set_auto_record,
@@ -335,13 +406,18 @@ HANDLERS = {
     "test_obs": cmd_test_obs,
     "reconnect_obs": cmd_reconnect_obs,
     "launch_obs": cmd_launch_obs,
+    "discover_obs": cmd_discover_obs,
+    "get_recording_path": cmd_get_recording_path,
     "get_history": cmd_get_history,
+    "delete_match": cmd_delete_match,
+    "update_match": cmd_update_match,
     "get_valo_state": cmd_get_valo_state,
+    "app_diagnostics": cmd_app_diagnostics,
 }
 
 
 # =========================================================================
-# BOUCLE DE LECTURE STDIN
+# BOUCLE STDIN
 # =========================================================================
 def _handle_request(line):
     try:
@@ -349,8 +425,6 @@ def _handle_request(line):
     except Exception as e:
         _send_notification("error", {"message": f"JSON invalide : {e}"})
         return
-    # Une requête doit être un objet JSON. Tout autre type (liste, nombre,
-    # chaîne, booléen) est rejeté proprement sans faire planter le backend.
     if not isinstance(req, dict):
         _send_notification("error", {"message": "Requête invalide : un objet JSON était attendu."})
         return
@@ -376,8 +450,7 @@ def _handle_request(line):
 
 def _stdin_loop():
     logger.info("Backend Python démarré.")
-    _send_notification("ready", {"version": "1.0.0", "time": datetime.now().isoformat()})
-    # Émet un premier statut pour que l'interface ne reste pas vide.
+    _send_notification("ready", {"version": "2.0.0", "time": datetime.now().isoformat()})
     try:
         _send_notification("status", monitor.snapshot())
     except Exception as e:
@@ -390,7 +463,6 @@ def _stdin_loop():
             time.sleep(0.5)
             continue
         if not line:
-            # stdin fermé (Electron a quitté) -> arrêt propre.
             _log_to_file("stdin fermé, arrêt du backend.")
             break
         line = line.strip()

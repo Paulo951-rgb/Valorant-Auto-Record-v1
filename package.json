@@ -27,6 +27,7 @@
       "electron/**/*",
       "renderer/**/*",
       "python/**/*.py",
+      "assets/**/*",
       "package.json"
     ],
     "extraResources": [

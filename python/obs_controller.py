@@ -1,174 +1,104 @@
-# obs_controller.py
-import time
-import subprocess
-import os
-from obsws_python import ReqClient
+# obs_controller.py — shim rétro-compatible
+# Toute la logique a été déplacée dans obs_service.OBSService.
+# Ce module expose les symboles historiques consommés par l'ancien code.
 
+import time
 import config
 import logger
 
-# État actuel de l'enregistrement
-recording = False
+from obs_service import (
+    OBSService,
+    ObsStatus,
+    ObsInstallation,
+    discover as _discover,
+    is_obs_process_running,
+)
 
-# Client OBS réutilisé
-_client = None
-
-DEFAULT_OBS_PATH = r"C:\Program Files\obs-studio\bin\64bit\obs64.exe"
-
-# ============================================================
-# VÉRIFICATION ET DÉMARRAGE PROCESSUS OBS
-# ============================================================
-
-def is_obs_running():
-    """Vérifie si le processus OBS est en cours d'exécution."""
-    try:
-        import psutil
-        for proc in psutil.process_iter(['name']):
-            name = (proc.info.get('name') or '').lower()
-            if name == 'obs64.exe':
-                return True
-    except ImportError:
-        # Solution de secours si psutil n'est pas installé
-        try:
-            output = subprocess.check_output('tasklist', shell=True).decode(errors='ignore')
-            return "obs64.exe" in output.lower()
-        except Exception:
-            return False
-    return False
+_service: OBSService = OBSService()
+_recording_local = {"value": False}
 
 
-def launch_obs():
-    """Démarre le processus OBS si ce dernier est introuvable."""
-    if is_obs_running():
-        logger.info("OBS est déjà en cours d'exécution.")
-        return True
+def _client():
+    return _service._client  # noqa: SLF001
 
-    obs_path = getattr(config, "OBS_EXE_PATH", DEFAULT_OBS_PATH)
-    if os.path.exists(obs_path):
-        logger.info("Démarrage d'OBS Studio...")
-        working_dir = os.path.dirname(obs_path)
-        subprocess.Popen([obs_path], cwd=working_dir)
-        time.sleep(5)  # Attente de l'initialisation du WebSocket d'OBS
-        return True
-    else:
-        logger.error(f"Impossible de démarrer OBS automatiquement. Fichier introuvable : {obs_path}")
-        return False
 
-# ============================================================
-# CONNEXION OBS WEBSOCKET
-# ============================================================
+# Réexport des fonctions publiques historiques ---------------------
+def is_obs_running() -> bool:
+    return is_obs_process_running()
+
+
+def launch_obs() -> bool:
+    """Démarre OBS et attend la disponibilité du WebSocket (timeout 45s)."""
+    return _service.launch(timeout=config.OBS_LAUNCH_TIMEOUT_S)
+
 
 def connect_obs():
-    global _client
-
-    if _client is not None:
-        try:
-            _client.get_version()
-            return _client
-        except Exception:
-            logger.warning("Connexion OBS perdue, reconnexion...")
-            _client = None
-
-    for attempt in range(1, config.OBS_MAX_RETRY + 1):
-        try:
-            logger.info(f"Tentative connexion OBS {attempt}/{config.OBS_MAX_RETRY}")
-            client = ReqClient(
-                host=config.OBS_HOST,
-                port=config.OBS_PORT,
-                password=config.OBS_PASSWORD
-            )
-            logger.success("Connexion OBS réussie")
-            _client = client
-            return _client
-        except Exception as e:
-            logger.error("Connexion OBS impossible", e)
-            if attempt < config.OBS_MAX_RETRY:
-                time.sleep(config.OBS_RETRY_DELAY)
-
-    logger.error("Impossible de joindre OBS après plusieurs tentatives")
+    """Renvoie le client OBS (ou None). Connexion paresseuse."""
+    if _service.connect():
+        return _service._client  # noqa: SLF001
     return None
 
 
-def obs_available():
-    return connect_obs() is not None
+def obs_available() -> bool:
+    return _service.connect()
 
 
-def test_obs_connection():
-    """Vérifie si la connexion avec OBS est disponible."""
-    return obs_available()
+def test_obs_connection() -> bool:
+    return _service.connect()
 
-# ============================================================
-# ENREGISTREMENT
-# ============================================================
 
-def start_record():
-    global recording
-    if recording:
-        logger.warning("StartRecord ignoré : déjà en enregistrement")
-        return False
+def start_record() -> bool:
+    ok = _service.start_recording()
+    if ok:
+        _recording_local["value"] = True
+    return ok
 
-    obs = connect_obs()
-    if obs is None:
-        return False
 
+def stop_record() -> bool:
+    ok = _service.stop_recording()
+    if ok:
+        _recording_local["value"] = False
+    return ok
+
+
+def is_recording() -> bool:
+    # Priorité au service (peut avoir été synchronisé via OBS).
     try:
-        obs.start_record()
-        recording = True
-        logger.success("ENREGISTREMENT OBS DEMARRE")
-        return True
-    except Exception as e:
-        logger.error("Erreur pendant StartRecord", e)
-        return False
+        st = _service.get_status(force=False)
+        if st.connected:
+            return bool(st.recording)
+    except Exception:
+        pass
+    return _recording_local["value"]
 
 
-def stop_record():
-    global recording
-    if not recording:
-        logger.warning("StopRecord ignoré : aucun enregistrement actif")
-        return False
-
-    obs = connect_obs()
-    if obs is None:
-        return False
-
-    try:
-        obs.stop_record()
-        recording = False
-        logger.success("ENREGISTREMENT OBS ARRETE")
-        return True
-    except Exception as e:
-        logger.error("Erreur pendant StopRecord", e)
-        return False
-
-
-def is_recording():
-    return recording
-
-
-def get_obs_status():
-    """Retourne un instantané léger de l'état d'OBS (non bloquant).
-
-    Contrairement à connect_obs(), cette fonction NE tente pas de reconnecter
-    si la connexion est perdue : elle se contente de vérifier le client mis en
-    cache. Les reconnexions lourdes sont laissées à connect_obs() (appelée par
-    start_record / test_obs_connection).
-    """
-    running = is_obs_running()
-    connected = False
-    scene = None
-    if _client is not None:
-        try:
-            _client.get_version()
-            connected = True
-            try:
-                scene = _client.get_current_program_scene().scene_name
-            except Exception:
-                scene = None
-        except Exception:
-            connected = False
+def get_obs_status() -> dict:
+    st = _service.get_status(force=False)
     return {
-        "running": running,
-        "connected": connected,
-        "recording": recording,
-        "scene": scene,
+        "running": st.running,
+        "connected": st.connected,
+        "recording": bool(st.recording),
+        "scene": st.scene,
+        "version": st.version,
+        "websocket_version": st.websocket_version,
+        "obs_exe_path": st.obs_exe_path,
+        "output_dir": st.output_dir,
     }
+
+
+def configure(host=None, port=None, password=None):
+    _service.configure(host=host, port=port, password=password)
+    # Réinitialise l'état local d'enregistrement
+    _recording_local["value"] = False
+
+
+def set_preferred_exe(path: str):
+    _service.set_preferred_exe(path)
+
+
+def discover_installations():
+    return _service.discover_installations()
+
+
+def get_recording_path() -> str | None:
+    return _service.get_recording_path()
