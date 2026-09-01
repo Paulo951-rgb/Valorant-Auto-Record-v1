@@ -201,28 +201,12 @@ class ValorantDataService:
     def get_player_stats(self) -> Dict[str, Any]:
         return {"note": "Stats distantes non disponibles sans token API."}
 
-    def get_current_match(self) -> Dict[str, Any]:
-        s = self.get_current_session()
-        return {
-            "in_match": s.state in RECORDABLE_STATES,
-            "state": s.state,
-            "state_label": s.state_label,
-            "map": s.map,
-            "agent": s.agent,
-            "score": s.score,
-            "queue_id": s.queue_id,
-            "mode": s.mode,
-        }
-
     # ----- internals -----
     def _fetch_session_safe(self) -> SessionState:
         """Comme _fetch_session mais ne lève jamais d'exception."""
         try:
             return self._fetch_session()
         except RiotClientNotRunning:
-            return SessionState()
-        except Exception as e:
-            logger.debug(f"Erreur session Valorant: {e}")
             return SessionState()
         except Exception as e:
             logger.debug(f"Erreur session Valorant: {e}")

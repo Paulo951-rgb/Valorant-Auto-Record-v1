@@ -261,7 +261,14 @@ async function loadHistory() {
   const list = $('#historyList');
   if (!list) return;
   list.innerHTML = '<div class="empty-state">Chargement…</div>';
-  const res = await api.call('get_history');
+  let res;
+  try {
+    res = await api.call('get_history');
+  } catch (e) {
+    if (token !== state.historyToken) return;
+    list.innerHTML = '<div class="empty-state">Backend déconnecté.</div>';
+    return;
+  }
   if (token !== state.historyToken) return; // une autre demande a pris le dessus
   if (!res || !res.ok) {
     list.innerHTML = '<div class="empty-state">Impossible de charger l\'historique.</div>';
@@ -376,11 +383,23 @@ $('#matchSort').addEventListener('change', (e) => {
 });
 $('#btnRefreshHistory').addEventListener('click', loadHistory);
 $('#btnOpenRecordings').addEventListener('click', async () => {
-  const cfg = state.config || ((await api.call('get_config')).data);
+  let cfg = state.config;
+  if (!cfg) {
+    try {
+      cfg = (await api.call('get_config')).data;
+    } catch (e) {
+      toast('Backend déconnecté.', 'err');
+      return;
+    }
+  }
   const folder = cfg && cfg.obs_folder;
   if (!folder) { toast('Aucun dossier configuré.', 'warn'); return; }
-  const res = await api.openPath(folder);
-  if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
+  try {
+    const res = await api.openPath(folder);
+    if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
+  } catch (e) {
+    toast('Impossible d\'ouvrir le dossier.', 'err');
+  }
 });
 
 /* ============================================================
@@ -403,7 +422,13 @@ const SETTING_FIELDS = [
 ];
 
 async function loadSettingsIntoForm() {
-  const res = await api.call('get_config');
+  let res;
+  try {
+    res = await api.call('get_config');
+  } catch (e) {
+    toast('Impossible de charger la configuration.', 'err');
+    return;
+  }
   if (!res || !res.ok) { toast('Impossible de charger la configuration.', 'err'); return; }
   const cfg = res.data || {};
   state.config = cfg;
@@ -552,7 +577,12 @@ $('#btnLaunchObs').addEventListener('click', async () => {
    Diagnostics
    ============================================================ */
 async function refreshDiagnostics() {
-  const r = await api.call('app_diagnostics');
+  let r;
+  try {
+    r = await api.call('app_diagnostics');
+  } catch (e) {
+    return;
+  }
   if (!r || !r.ok) return;
   const d = r.data || {};
   const setText = (id, v) => { const el = $('#' + id); if (el) el.textContent = v; };
@@ -570,7 +600,13 @@ async function refreshDiagnostics() {
 }
 $('#btnRefreshDiag').addEventListener('click', refreshDiagnostics);
 $('#btnOpenLogDir').addEventListener('click', async () => {
-  const r = await api.call('app_diagnostics');
+  let r;
+  try {
+    r = await api.call('app_diagnostics');
+  } catch (e) {
+    toast('Backend déconnecté.', 'err');
+    return;
+  }
   if (r && r.ok && r.data && r.data.log_path) {
     const res = await api.openPath(r.data.log_path);
     if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
@@ -612,11 +648,23 @@ $('#btnAutoRecord').addEventListener('click', async () => {
     'Enregistrement automatique ' + (next ? 'activé.' : 'désactivé.'), 'Auto record'));
 });
 $('#btnOpenFolder').addEventListener('click', async () => {
-  const cfg = state.config || ((await api.call('get_config')).data);
+  let cfg = state.config;
+  if (!cfg) {
+    try {
+      cfg = (await api.call('get_config')).data;
+    } catch (e) {
+      toast('Backend déconnecté.', 'err');
+      return;
+    }
+  }
   const folder = cfg && cfg.obs_folder;
   if (folder) {
-    const res = await api.openPath(folder);
-    if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
+    try {
+      const res = await api.openPath(folder);
+      if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
+    } catch (e) {
+      toast('Impossible d\'ouvrir le dossier.', 'err');
+    }
   } else toast('Aucun dossier configuré.', 'warn');
 });
 $('#btnRestartBackend').addEventListener('click', async () => {
@@ -694,5 +742,5 @@ api.on('backend:closed', (data) => {
     }
   } catch (e) { /* ignore */ }
   // Polling sécurité (désactivé si backend déconnecté).
-  setInterval(() => { if (state.backendAlive) api.call('get_status'); }, 10000);
+  setInterval(() => { if (state.backendAlive) api.call('get_status').catch(() => {}); }, 10000);
 })();

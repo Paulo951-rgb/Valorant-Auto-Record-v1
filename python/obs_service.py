@@ -486,13 +486,8 @@ class OBSService:
 
     def _connect_unlocked(self) -> bool:
         """Connexion OBS sans retenir _lock (appelé depuis start/stop_recording
-        qui détiennent déjà le lock). Copie la config et délègue à connect()."""
-        host = self._host
-        port = self._port
-        password = self._password or ""
-        # connect() acquire le lock en interne — safe car RLock est réentrant,
-        # mais ici on cherche à éviter un deadlock si connect() doit faire du I/O
-        # long. On libère donc le lock principal, on connecte, puis on le reprends.
+        qui détiennent déjà le lock). On libère le lock pour éviter de bloquer
+        le monitoring pendant la reconnexion, puis on le reprend."""
         self._lock.release()
         try:
             ok = self.connect(force=True)

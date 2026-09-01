@@ -99,6 +99,7 @@ function buildTray() {
   if (tray) return;
   const iconPath = getAssetPath('tray.png');
   const img = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  let monitoring = false;
   try {
     tray = new Tray(img);
   } catch (e) {
@@ -107,7 +108,6 @@ function buildTray() {
   }
   tray.setToolTip('Valorant Auto Record');
   const rebuildMenu = () => {
-    const monitoring = !!(backend && backend.isRunning);
     const menu = Menu.buildFromTemplate([
       { label: 'Ouvrir la fenêtre', click: () => createWindow() },
       { type: 'separator' },
@@ -138,6 +138,15 @@ function buildTray() {
       else { mainWindow.show(); mainWindow.focus(); }
     } else { createWindow(); }
   });
+  // Track monitoring state via backend notifications.
+  if (backend) {
+    backend.on('status', (data) => {
+      if (data && typeof data.monitoring === 'boolean') {
+        monitoring = data.monitoring;
+        rebuildMenu();
+      }
+    });
+  }
 }
 
 function startBackend() {

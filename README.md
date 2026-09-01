@@ -58,7 +58,7 @@ L'utilisateur n'a qu'à lancer Valorant et à jouer.
 - **Single-instance** : une seule instance de l'application peut tourner.
 - **Reconnexion automatique** d'OBS et relance automatique du backend en cas de crash (backoff).
 - **Logs catégorisés** (INFO / SUCCESS / WARNING / ERROR / DEBUG) avec messages humanisés côté utilisateur.
-- **Tests unitaires** (21 tests) sur OBS, Valorant, enregistrement, historique, migration, protocole.
+  - **Tests unitaires** (35 tests) sur OBS, Valorant, enregistrement, historique, migration, protocole, bugs corrigés.
 
 ---
 
@@ -184,7 +184,11 @@ cd python
 python3 test_refonte.py
 ```
 
-21 tests : OBS, Valorant, enregistrement, historique (migration, upsert, suppression), logique de monitor, protocole JSON-lines, gestion d'entrées invalides.
+21 → 35 tests : OBS, Valorant (lockfile, mappage, session), enregistrement (file_manager,
+wait_for_finalized, rename, collision), historique (migration, upsert, suppression),
+logique de monitor (écran→actif, fin→finalisation, cooldown, auto_record off), protocole
+JSON-lines (ping, méthodes inconnues, entrées invalides), bugs corrigés (v4/v5, verrou
+OBS, scores None, unicité match_id, auto_launch_obs, crash Valorant).
 
 ## Sécurité
 

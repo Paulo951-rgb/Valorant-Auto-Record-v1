@@ -593,6 +593,78 @@ class TestBugsFixed(unittest.TestCase):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_auto_launch_obs_disabled(self):
+        """Vérifie que _on_match_start respecte auto_launch_obs=False."""
+        from game_monitor import GameMonitor, GameState
+        from valorant_service import SessionState
+        import match_repository
+        tmp = tempfile.mkdtemp(prefix="var_nolaunch_")
+        repo = match_repository.MatchRepository(os.path.join(tmp, "test.db"))
+        repo.init()
+        cfg = {"auto_record": True, "obs_folder": tmp,
+               "obs_host": "127.0.0.1", "obs_port": 1, "obs_password": "",
+               "auto_launch_obs": False, "max_size_gb": 0}
+        events = []
+        mon = GameMonitor(get_runtime_config=lambda: cfg,
+                          emit_event=lambda n, d: events.append((n, d)),
+                          repository=repo)
+        with mock.patch("game_monitor.is_obs_running", return_value=False), \
+             mock.patch("game_monitor.launch_obs", return_value=True), \
+             mock.patch("game_monitor.test_obs_connection", return_value=True), \
+             mock.patch("game_monitor.start_record", return_value=True), \
+             mock.patch("game_monitor.is_recording", return_value=False), \
+             mock.patch("game_monitor.get_recording_path", return_value=tmp), \
+             mock.patch("game_monitor.file_manager.wait_for_finalized_recording",
+                        return_value=None):
+            sess = SessionState(state="INGAME", map="Ascent", agent="Jett",
+                                score="0-0", ally_score=0, enemy_score=0,
+                                queue_id="competitive")
+            mon._current_session = sess
+            mon._handle_session_state(sess, cfg)
+            # Lancement OBS doit être évité (launch_obs jamais appelé)
+            # Le state reste MATCH_LOADING (pas de transition vers MATCH_ACTIVE)
+            self.assertEqual(mon.state, GameState.MATCH_LOADING.value)
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_valorant_crash_finalizes_match(self):
+        """Vérifie que _on_valorant_not_running finalise le match en cours."""
+        from game_monitor import GameMonitor, GameState
+        from valorant_service import SessionState
+        import match_repository
+        tmp = tempfile.mkdtemp(prefix="var_crash_")
+        db_path = os.path.join(tmp, "test.db")
+        repo = match_repository.MatchRepository(db_path)
+        repo.init()
+        cfg = {"auto_record": True, "obs_folder": tmp,
+               "obs_host": "127.0.0.1", "obs_port": 1, "obs_password": "",
+               "max_size_gb": 0}
+        events = []
+        mon = GameMonitor(get_runtime_config=lambda: cfg,
+                          emit_event=lambda n, d: events.append((n, d)),
+                          repository=repo)
+        with mock.patch("game_monitor.is_obs_running", return_value=True), \
+             mock.patch("game_monitor.test_obs_connection", return_value=True), \
+             mock.patch("game_monitor.start_record", return_value=True), \
+             mock.patch("game_monitor.stop_record", return_value=True), \
+             mock.patch("game_monitor.is_recording", return_value=True), \
+             mock.patch("game_monitor.get_recording_path", return_value=tmp), \
+             mock.patch("game_monitor.launch_obs", return_value=True), \
+             mock.patch("game_monitor.file_manager.wait_for_finalized_recording",
+                        return_value=None):
+            sess = SessionState(state="INGAME", map="Ascent", agent="Jett",
+                                score="5-4", ally_score=5, enemy_score=4)
+            mon._current_session = sess
+            mon._on_match_start(sess, cfg)
+            # Le match est en cours
+            self.assertEqual(mon.state, GameState.MATCH_ACTIVE.value)
+            # Simule le crash de Valorant
+            mon._on_valorant_not_running()
+            # L'état doit être IDLE (finalisé + nettoyé)
+            self.assertEqual(mon.state, GameState.IDLE.value)
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

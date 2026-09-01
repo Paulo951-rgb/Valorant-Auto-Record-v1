@@ -152,6 +152,12 @@ class ConfigStore:
                            password=config.OBS_PASSWORD)
         except Exception:
             pass
+        # Synchronise le chemin EXÉ preferé sur le service partagé.
+        try:
+            from obs_controller import set_preferred_exe
+            set_preferred_exe(config.OBS_EXE_PATH)
+        except Exception:
+            pass
 
 
 store = ConfigStore()
@@ -162,6 +168,21 @@ store = ConfigStore()
 # =========================================================================
 _file_log_lock = threading.Lock()
 _log_file_handle = None
+
+
+def _close_log_file():
+    global _log_file_handle
+    if _log_file_handle is not None:
+        try:
+            _log_file_handle.flush()
+            _log_file_handle.close()
+        except Exception:
+            pass
+        _log_file_handle = None
+
+
+import atexit
+atexit.register(_close_log_file)
 
 
 def _open_log_file():
@@ -320,8 +341,6 @@ def cmd_test_obs(params):
 
 def cmd_reconnect_obs(params):
     # Force une reconnexion propre (réinitialise le client mis en cache).
-    from obs_service import OBSService
-    # On accède au service via le shim pour conserver l'instance unique.
     from obs_controller import _service as _shared_service
     _shared_service.reset_client()
     ok = test_obs_connection()
@@ -329,6 +348,11 @@ def cmd_reconnect_obs(params):
 
 
 def cmd_launch_obs(params):
+    cfg = store.get()
+    preferred = cfg.get("obs_exe_path")
+    if preferred:
+        from obs_controller import set_preferred_exe
+        set_preferred_exe(preferred)
     ok = launch_obs()
     return {"launched": ok, "running": is_obs_running(),
             "recording_path": get_recording_path()}
@@ -428,6 +452,8 @@ def cmd_quit(params):
         if monitor.running:
             monitor.stop()
         time.sleep(0.3)
+        # Ferme proprement le fichier de log (os._exit contourne atexit).
+        _close_log_file()
         os._exit(0)
     _t.Timer(0.05, _shutdown).start()
     return {"quit": True}
@@ -546,6 +572,15 @@ def main():
     finally:
         if monitor.running:
             monitor.stop()
+        # Ferme proprement le fichier de log.
+        global _log_file_handle
+        if _log_file_handle is not None:
+            try:
+                _log_file_handle.flush()
+                _log_file_handle.close()
+            except Exception:
+                pass
+            _log_file_handle = None
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ Mécanismes clés :
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 import uuid
@@ -90,6 +91,7 @@ class GameMonitor:
         self._last_error: Optional[str] = None
         self._match_cooldown_until = 0.0
         self._last_completed_match_id: Optional[str] = None
+        self._status_lock = threading.Lock()
 
     # ---------- properties ----------
     @property
@@ -173,6 +175,11 @@ class GameMonitor:
             else:
                 self._state = GameState.RECORDING_STOPPING
         ok = stop_record()
+        if not ok and is_recording():
+            logger.error("Échec de l'arrêt manuel de l'enregistrement.")
+            self._last_error = "Échec de l'arrêt de l'enregistrement OBS."
+            self._emit_status(force=True)
+            return False
         if ok:
             self._record_start_ts = None
         self._finalize_current_match()
@@ -261,6 +268,9 @@ class GameMonitor:
                     pass
                 self._state = GameState.MATCH_FINISHING
                 self._record_start_ts = None
+        if recording_active:
+            self._finalize_current_match(session=self._current_session)
+        with self._state_lock:
             if self._state != GameState.IDLE:
                 self._state = GameState.IDLE
                 self._previous_state = None
@@ -302,8 +312,12 @@ class GameMonitor:
 
         self._state = GameState.MATCH_LOADING
         logger.info(f"Début de partie détecté : {session.map} ({session.agent}).")
-        # OBS : si pas lancé, lancer discrètement
+        # OBS : si pas lancé, lancer discrètement (sauf si désactivé)
         if not is_obs_running():
+            if not cfg.get("auto_launch_obs", True):
+                logger.warning("Démarrage du match mais lancement OBS désactivé.")
+                self._last_error = "Lancement OBS désactivé. Activez-le dans les paramètres."
+                return
             launched = launch_obs()
             if not launched:
                 logger.error("Impossible de lancer OBS pour enregistrer.")
@@ -345,12 +359,19 @@ class GameMonitor:
     def _on_match_end(self, session, cfg):
         logger.info("Fin de partie détectée.")
         self._state = GameState.MATCH_FINISHING
+        stopped_ok = True
         if is_recording():
             self._state = GameState.RECORDING_STOPPING
             try:
-                stop_record()
+                stopped_ok = stop_record()
             except Exception as e:
                 logger.error(f"Erreur stop_record : {e}")
+                stopped_ok = False
+        if not stopped_ok and is_recording():
+            logger.error("Impossible d'arrêter l'enregistrement OBS. Finalisation reportée.")
+            self._last_error = "Échec de l'arrêt de l'enregistrement OBS."
+            self._emit_status(force=True)
+            return
         self._record_start_ts = None
         self._finalize_current_match(session=session)
 
@@ -413,16 +434,20 @@ class GameMonitor:
 
         # Attente du fichier finalisé
         started = current_match.get("started_at") or 0
-        try:
-            finalized = file_manager.wait_for_finalized_recording(
-                obs_folder,
-                since_ts=started,
-                timeout=15.0,
-                stable_seconds=2.0,
-            )
-        except Exception as e:
-            logger.error(f"Erreur attente finalisation: {e}")
-            finalized = None
+        finalized = None
+        if started > 0:
+            try:
+                finalized = file_manager.wait_for_finalized_recording(
+                    obs_folder,
+                    since_ts=started,
+                    timeout=15.0,
+                    stable_seconds=2.0,
+                )
+            except Exception as e:
+                logger.error(f"Erreur attente finalisation: {e}")
+                finalized = None
+        else:
+            logger.warning("Finalisation sans timestamp de démarrage — aucun fichier à traiter.")
 
         video_path = None
         file_size = 0
@@ -556,14 +581,17 @@ class GameMonitor:
         except Exception as e:
             self._last_error = str(e)
             return
-        import json as _json
+        js = None
         try:
-            js = _json.dumps(data, sort_keys=True, default=str)
+            js = json.dumps(data, sort_keys=True, default=str)
         except Exception:
             return
         if not force and js == self._last_status_json:
             return
-        self._last_status_json = js
+        with self._status_lock:
+            if not force and js == self._last_status_json:
+                return
+            self._last_status_json = js
         try:
             self._emit_event("status", data)
         except Exception as e:
