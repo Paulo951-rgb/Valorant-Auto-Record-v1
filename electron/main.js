@@ -106,19 +106,32 @@ function buildTray() {
     return;
   }
   tray.setToolTip('Valorant Auto Record');
-  const rebuildMenu = () => Menu.buildFromTemplate([
-    { label: 'Ouvrir la fenêtre', click: () => createWindow() },
-    { type: 'separator' },
-    {
-      label: 'Surveillance',
-      type: 'checkbox',
-      checked: !!(backend && backend.isRunning),
-      enabled: !!backend,
-    },
-    { type: 'separator' },
-    { label: 'Quitter', click: () => { isQuitting = true; app.quit(); } },
-  ]);
-  tray.setContextMenu(rebuildMenu());
+  const rebuildMenu = () => {
+    const monitoring = !!(backend && backend.isRunning);
+    const menu = Menu.buildFromTemplate([
+      { label: 'Ouvrir la fenêtre', click: () => createWindow() },
+      { type: 'separator' },
+      {
+        label: 'Surveillance',
+        type: 'checkbox',
+        checked: monitoring,
+        enabled: !!backend,
+        click: () => {
+          if (!backend) return;
+          if (monitoring) {
+            backend.send('stop_monitoring');
+          } else {
+            backend.send('start_monitoring');
+          }
+          setTimeout(rebuildMenu, 500);
+        },
+      },
+      { type: 'separator' },
+      { label: 'Quitter', click: () => { isQuitting = true; app.quit(); } },
+    ]);
+    tray.setContextMenu(menu);
+  };
+  rebuildMenu();
   tray.on('click', () => {
     if (mainWindow) {
       if (mainWindow.isVisible()) mainWindow.hide();

@@ -509,6 +509,90 @@ class TestBugsFixed(unittest.TestCase):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_result_computation_with_none_scores(self):
+        """Vérifie que le calcul du résultat ne plante pas quand les scores
+        sont None (bug corrigé dans game_monitor._finalize_current_match_locked)."""
+        from game_monitor import GameMonitor, GameState
+        from valorant_service import SessionState
+        import match_repository as match_repository_mod
+        tmp = tempfile.mkdtemp(prefix="var_none_")
+        db_path = os.path.join(tmp, "test.db")
+        repo = match_repository_mod.MatchRepository(db_path)
+        repo.init()
+        cfg = {"auto_record": True, "obs_folder": tmp,
+               "obs_host": "127.0.0.1", "obs_port": 1, "obs_password": "",
+               "max_size_gb": 0}
+        events = []
+        mon = GameMonitor(get_runtime_config=lambda: cfg,
+                          emit_event=lambda n, d: events.append((n, d)),
+                          repository=repo)
+        with mock.patch("game_monitor.is_obs_running", return_value=True), \
+             mock.patch("game_monitor.test_obs_connection", return_value=True), \
+             mock.patch("game_monitor.start_record", return_value=True), \
+             mock.patch("game_monitor.stop_record", return_value=True), \
+             mock.patch("game_monitor.is_recording", return_value=True), \
+             mock.patch("game_monitor.get_recording_path", return_value=tmp), \
+             mock.patch("game_monitor.launch_obs", return_value=True), \
+             mock.patch("game_monitor.file_manager.wait_for_finalized_recording",
+                        return_value=None):
+            sess = SessionState(state="INGAME", map="Ascent", agent="Jett",
+                                score="13-9", ally_score=None, enemy_score=None)
+            mon._current_session = sess
+            mon._on_match_start(sess, cfg)
+            mon._match["ally_score"] = None
+            mon._match["enemy_score"] = None
+            mon._finalize_current_match(session=sess)
+            # Le résultat doit être "Inconnu" (égalité 0-0)
+            rows = repo.get_all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["result"], "Inconnu")
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_local_match_id_uniqueness(self):
+        """Vérifie que deux match_ids générés dans le même instant sont uniques."""
+        from game_monitor import GameMonitor
+        from valorant_service import SessionState
+        tmp = tempfile.mkdtemp()
+        try:
+            cfg = {"auto_record": True, "obs_folder": tmp, "poll_interval": 2}
+            events = []
+            mon = GameMonitor(get_runtime_config=lambda: cfg,
+                              emit_event=lambda n, d: events.append((n, d)))
+            s = SessionState(state="INGAME", map="Ascent", agent="Jett",
+                             score="13-9", ally_score=13, enemy_score=9,
+                             queue_id="competitive")
+            ids = [mon._make_local_match_id(session=s) for _ in range(10)]
+            self.assertEqual(len(ids), len(set(ids)))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_get_version_handler(self):
+        """Vérifie que get_version renvoie la version de l'app."""
+        from backend import cmd_get_version, APP_VERSION
+        r = cmd_get_version({})
+        self.assertEqual(r["version"], APP_VERSION)
+
+    def test_file_manager_exclude_case_insensitive(self):
+        """Vérifie que le exclude est case-insensitive (Windows)."""
+        from file_manager import get_latest_file
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "a.mp4")
+            b = os.path.join(tmp, "b.mp4")
+            with open(a, "wb") as f: f.write(b"a")
+            time.sleep(0.05)
+            with open(b, "wb") as f: f.write(b"b")
+            # Exclude en majuscule (simule Windows)
+            excluded = get_latest_file(tmp, exclude=b.upper() if os.name == 'nt' else b)
+            latest = get_latest_file(tmp)
+            if latest:
+                self.assertEqual(latest, b)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

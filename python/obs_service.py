@@ -434,8 +434,10 @@ class OBSService:
                 if self._wait_for_recording_state_locked(self._client, True, timeout=2.0):
                     return True
                 # Désynchronisation : on tente quand même.
-            if self._client is None and not self._unlock_connect():
-                return False
+            if self._client is None:
+                ok = self._connect_unlocked()
+                if not ok:
+                    return False
             client = self._client
             if client is None:
                 return False
@@ -462,8 +464,10 @@ class OBSService:
                         return True
                 except Exception:
                     return True
-            if self._client is None and not self._unlock_connect():
-                return False
+            if self._client is None:
+                ok = self._connect_unlocked()
+                if not ok:
+                    return False
             client = self._client
             if client is None:
                 return False
@@ -480,16 +484,18 @@ class OBSService:
                 self._client = None
                 return False
 
-    def _unlock_connect(self) -> bool:
-        """Tente de connecter en relâchant temporairement le lock pour éviter
-        un deadlock si on est dans start_recording()."""
-        # On est déjà dans le lock principal. On appelle connect() en mode
-        # "sans lock" en relâchant puis reprenant.
-        # En pratique, on a juste besoin d'un test rapide.
-        # Solution simple : appel récursif via un sous-lock.
+    def _connect_unlocked(self) -> bool:
+        """Connexion OBS sans retenir _lock (appelé depuis start/stop_recording
+        qui détiennent déjà le lock). Copie la config et délègue à connect()."""
+        host = self._host
+        port = self._port
+        password = self._password or ""
+        # connect() acquire le lock en interne — safe car RLock est réentrant,
+        # mais ici on cherche à éviter un deadlock si connect() doit faire du I/O
+        # long. On libère donc le lock principal, on connecte, puis on le reprends.
         self._lock.release()
         try:
-            ok = self.connect()
+            ok = self.connect(force=True)
         finally:
             self._lock.acquire()
         return ok

@@ -310,7 +310,7 @@ function renderMatches() {
 
 function buildMatchCard(m) {
   const result = m.result || 'Inconnu';
-  const cls = (result || 'inconnu').toLowerCase();
+  const cls = result.toLowerCase().replace(/\s+/g, '-');
   const card = document.createElement('div');
   card.className = 'match-card ' + cls;
   const score = m.score || `${m.ally_score ?? 0}-${m.enemy_score ?? 0}`;
@@ -340,9 +340,10 @@ function buildMatchCard(m) {
   const openBtn = card.querySelector('[data-act="open"]');
   const delBtn = card.querySelector('[data-act="del"]');
   if (openBtn) {
-    openBtn.addEventListener('click', () => {
-      if (m.video_path) api.openPath(m.video_path);
-      else toast('Vidéo introuvable.', 'warn');
+    openBtn.addEventListener('click', async () => {
+      if (!m.video_path) { toast('Vidéo introuvable.', 'warn'); return; }
+      const res = await api.openPath(m.video_path);
+      if (res && res.ok === false) toast('Impossible d\'ouvrir le fichier : ' + (res.error || ''), 'err');
     });
   }
   if (delBtn) {
@@ -377,8 +378,9 @@ $('#btnRefreshHistory').addEventListener('click', loadHistory);
 $('#btnOpenRecordings').addEventListener('click', async () => {
   const cfg = state.config || ((await api.call('get_config')).data);
   const folder = cfg && cfg.obs_folder;
-  if (folder) api.openPath(folder);
-  else toast('Aucun dossier configuré.', 'warn');
+  if (!folder) { toast('Aucun dossier configuré.', 'warn'); return; }
+  const res = await api.openPath(folder);
+  if (res && res.ok === false) toast('Impossible d\'ouvrir : ' + (res.error || ''), 'err');
 });
 
 /* ============================================================

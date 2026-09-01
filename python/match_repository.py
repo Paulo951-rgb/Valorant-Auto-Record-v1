@@ -36,6 +36,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 import config
@@ -146,6 +147,11 @@ class MatchRepository:
                 match_id = f"{config.LOCAL_MATCH_PREFIX}{uuid.uuid4().hex[:12]}"
                 data["match_id"] = match_id
                 generated = True
+            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if "created_at" not in data or data["created_at"] is None:
+                data["created_at"] = now_iso
+            if "date" not in data or data["date"] is None:
+                data["date"] = now_iso
             with self._conn() as c:
                 cur = c.cursor()
                 cur.execute("SELECT id FROM matches WHERE match_id=?", (match_id,))
